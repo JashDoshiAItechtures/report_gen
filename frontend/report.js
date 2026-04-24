@@ -17,8 +17,25 @@
         return;
     }
 
-    // ── Retrieve data from sessionStorage ─────────────────────────────────
-    const raw = sessionStorage.getItem(reportId);
+    // ── Show a loading screen while the parent window is still generating ─────
+    // This tab is opened early (before fetch completes) to bypass popup blockers.
+    // The opener navigates us to the real URL once the report is ready.
+    if (reportId === "loading") {
+        document.getElementById("reportContent").innerHTML = `
+            <div class="report-loading">
+                <div class="report-loading-spinner"></div>
+                <div class="report-loading-text">
+                    Generating your analytics report…
+                    <span style="font-size:0.75rem;opacity:0.55;margin-top:0.6rem;display:block">
+                        This usually takes 30–60 seconds. This tab will update automatically.
+                    </span>
+                </div>
+            </div>`;
+        return;
+    }
+
+    // ── Retrieve data from localStorage ─────────────────────────────────
+    const raw = localStorage.getItem(reportId);
     if (!raw) {
         document.getElementById("reportContent").innerHTML =
             '<div class="report-loading"><div class="report-loading-text">Report data not found. Please generate the report again from the chat.</div></div>';
@@ -239,18 +256,11 @@
             charts.forEach((chart, idx) => {
                 const hasExplanation = chart.explanation && (chart.explanation.what || chart.explanation.how);
                 const isWide = shouldBeWide[idx];
-                html += `<div class="chart-card${isWide ? " chart-full-width" : ""}">
-                    <div class="chart-header">
-                        <span class="chart-title">${escapeHtml(chart.title || "Chart " + (idx + 1))}</span>
-                        ${hasExplanation ? `<button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(chart.explanation))}' data-title="${escapeAttr(chart.title || "Chart")}">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                        </button>` : ""}
-                    </div>
-                    <div class="chart-body">
-                        <canvas id="chart_${idx}"></canvas>
-                    </div>
-                </div>`;
+                const chartTypeBadge = (chart.type || "bar").replace("horizontalBar","H.BAR").replace("stackedBar","STACKED").replace("doughnut","DONUT").toUpperCase();
+                const chartInsight = chart.chart_insight || (chart.explanation && chart.explanation.insight) || "";
+                html += `<div class="chart-card${isWide ? " chart-full-width" : ""}">\n                    <div class="chart-header">\n                        <span class="chart-title">${escapeHtml(chart.title || "Chart " + (idx + 1))}</span>\n                        <div style="display:flex;align-items:center;gap:0.4rem">\n                            <span class="chart-type-badge">${chartTypeBadge}</span>\n                            ${hasExplanation ? `<button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(chart.explanation))}' data-title="${escapeAttr(chart.title || "Chart")}">\n                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>\n                            </button>` : ""}\n                        </div>\n                    </div>\n                    <div class="chart-body">\n                        <canvas id="chart_${idx}"></canvas>\n                    </div>\n                    ${chartInsight ? `<div class="chart-insight-text">💡 ${escapeHtml(chartInsight)}</div>` : ""}\n                </div>`;
             });
+
             html += `</div>`;
         }
 
@@ -415,7 +425,7 @@
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         report: originalReport,
-                        provider: sessionStorage.getItem(reportId + "_provider") || "groq",
+                        provider: localStorage.getItem(reportId + "_provider") || "groq",
                         ...filters,
                     }),
                 });
@@ -433,7 +443,7 @@
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         question: question,
-                        provider: sessionStorage.getItem(reportId + "_provider") || "groq",
+                        provider: localStorage.getItem(reportId + "_provider") || "groq",
                         ...filters,
                     }),
                 });
@@ -597,15 +607,33 @@
             }
 
             if (chartType === "bar") {
-                // Glass-transparent bar: very light fill, crisp colored border
-                cfg.borderRadius = isHorizontal ? 4 : 6;
+                cfg.borderRadius = isHorizontal ? 5 : 8;
                 cfg.borderSkipped = false;
-                cfg.borderWidth = 2;
-                cfg.borderColor = color;
-                cfg.backgroundColor = color + (isStacked ? "44" : "22");
-                cfg.hoverBackgroundColor = color + "55";
-                cfg.hoverBorderColor = color;
-                cfg.hoverBorderWidth = 2.5;
+                if (isStacked) {
+                    // Stacked bars: solid semi-opaque fill per series
+                    cfg.backgroundColor = color + "cc";
+                    cfg.borderColor = color;
+                    cfg.borderWidth = 0;
+                    cfg.hoverBackgroundColor = color + "ee";
+                } else {
+                    // Single-series bars: gradient fill from solid to lighter
+                    cfg.backgroundColor = (ctx) => {
+                        if (!ctx || !ctx.chart || !ctx.chart.chartArea) return color + "cc";
+                        const { top, bottom, left, right } = ctx.chart.chartArea;
+                        const gradient = ctx.chart.ctx.createLinearGradient(
+                            isHorizontal ? left : 0,
+                            isHorizontal ? 0 : top,
+                            isHorizontal ? right : 0,
+                            isHorizontal ? 0 : bottom
+                        );
+                        gradient.addColorStop(0, color + "ee");
+                        gradient.addColorStop(1, color + "55");
+                        return gradient;
+                    };
+                    cfg.borderColor = color;
+                    cfg.borderWidth = 0;
+                    cfg.hoverBackgroundColor = color + "ff";
+                }
             }
 
             if (isPieType(chartType)) {

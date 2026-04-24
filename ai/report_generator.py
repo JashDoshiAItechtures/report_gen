@@ -28,23 +28,57 @@ MAX_REPAIR_RETRIES = 2
 
 # ── Intent classification (deterministic — no LLM) ─────────────────────────
 
+# ── Modify intent keywords / patterns (checked FIRST — highest priority) ──
+_MODIFY_KEYWORDS = [
+    "update ", "set price", "change price", "change the price", "modify price",
+    "delete record", "delete the record", "remove record", "remove the record",
+    "insert record", "add record", "add a new", "add new customer", "add new product",
+    "update record", "update the record", "change the status", "set the status",
+    "set status to", "mark as", "mark order",
+]
+_MODIFY_PATTERNS = [
+    r"\bupdate\b.{1,60}\bset\b",                        # UPDATE … SET
+    r"\bset\b.{1,40}\bto\b.{1,40}\bwhere\b",            # SET x TO y WHERE
+    r"\b(?:change|set|update|modify)\b.{1,40}\bprice\b", # change/set … price
+    r"\b(?:change|set|update)\b.{1,40}\bto\b\s+\d",      # change X to <number>
+    r"\b(?:delete|remove)\b.{0,40}\b(?:record|row|entry|order|customer|product)\b",
+    r"\b(?:insert|add)\b.{0,40}\b(?:record|row|entry|new customer|new product)\b",
+    r"\bmark\b.{1,40}\b(?:as|to)\b.{1,20}\b(?:complete|paid|cancelled|shipped|delivered)\b",
+]
+
+# ── Chart intent keywords / patterns ─────────────────────────────────────
+_CHART_KEYWORDS = [
+    "bar chart", "pie chart", "line chart", "doughnut chart",
+    "area chart", "scatter chart", "show chart", "show graph",
+    "plot ", "draw chart", "draw graph", "visualize", "visualization",
+]
+_CHART_PATTERNS = [
+    r"\b(?:show|create|make|draw|plot|give\s+me)\b.{0,30}\b(?:chart|graph|plot|diagram)\b",
+    r"\b(?:bar|line|pie|doughnut|scatter|area)\b.{0,15}\b(?:chart|graph)\b",
+]
+
+# ── Export intent keywords ────────────────────────────────────────────────
+_EXPORT_KEYWORDS = [
+    "export as pdf", "export to pdf", "download pdf", "save as pdf",
+    "export excel", "download excel", "export csv", "download csv", "export xlsx",
+]
+
+# ── Report intent keywords / patterns ────────────────────────────────────
 _REPORT_KEYWORDS = [
-    # Generic report terms
-    "report", "dashboard", "analyze", "analysis", "trend", "trends",
+    # Generic report terms (explicit report-specific, NOT plain queries)
+    "report", "dashboard", "analysis", "trend", "trends",
     "summary", "comparison", "compare", "insight", "insights",
     "performance", "overview", "breakdown", "kpi", "kpis",
-    "analytics", "metrics", "statistics", "visualize", "visualization",
-    "chart", "graph", "show me", "give me a report",
-    "top 10", "top 5", "top 20",
+    "analytics", "metrics", "statistics",
     # Sales / revenue
     "sales report", "revenue report", "revenue analysis",
     # Operations / order status
-    "open orders", "open order", "inorder", "in-order", "in order",
-    "order status", "order fulfillment", "active orders", "pending orders",
+    "open orders", "open order", "inorder", "in-order",
+    "order fulfillment", "active orders", "pending orders",
     # Backorder
     "backorder", "back order", "back-order", "unfulfilled", "outstanding orders",
     # Procurement / purchasing
-    "purchase order", "procurement", "vendor report", "vendor analysis",
+    "procurement", "vendor report", "vendor analysis",
     "po report", "supplier report",
     # Customer / product
     "customer report", "customer analysis", "product report", "product analysis",
@@ -57,7 +91,6 @@ _REPORT_PATTERNS = [
     r"\b(?:show|give|create|generate|build|make)\b.*\b(?:report|dashboard|analysis|overview)\b",
     r"\b(?:sales|revenue|order|product|customer|vendor)\s+(?:performance|analysis|breakdown|trend|summary)\b",
     r"\b(?:analyze|analyse)\b",
-    r"\btop\s+\d+\b.*\b(?:product|customer|vendor|item|sku)\b",
     # Operational / backorder / procurement report patterns
     r"\b(?:backorder|back-order|inorder|in-order)\b",
     r"\b(?:open|pending|active|processing)\s+orders?\b",
@@ -69,23 +102,44 @@ _REPORT_PATTERNS = [
 
 
 def classify_intent(question: str) -> str:
-    """Classify user intent as 'chat' or 'report'.
+    """Classify user intent: 'query' | 'chart' | 'report' | 'modify' | 'export'.
 
-    Uses keyword matching and regex patterns — fully deterministic.
+    Priority order: modify → export → chart → report → query (default).
+    All matching is deterministic keyword/regex — no LLM call.
     """
     q = question.lower().strip()
 
-    # Check for explicit report patterns first
+    # 1. Modify — highest priority; must NOT run through the SELECT pipeline
+    for pattern in _MODIFY_PATTERNS:
+        if re.search(pattern, q):
+            return "modify"
+    for kw in _MODIFY_KEYWORDS:
+        if kw in q:
+            return "modify"
+
+    # 2. Export
+    for kw in _EXPORT_KEYWORDS:
+        if kw in q:
+            return "export"
+
+    # 3. Chart — before report (report keywords used to include 'chart' etc.)
+    for pattern in _CHART_PATTERNS:
+        if re.search(pattern, q):
+            return "chart"
+    for kw in _CHART_KEYWORDS:
+        if kw in q:
+            return "chart"
+
+    # 4. Report
     for pattern in _REPORT_PATTERNS:
         if re.search(pattern, q):
             return "report"
-
-    # Keyword check — at least one keyword must appear
     for kw in _REPORT_KEYWORDS:
         if kw in q:
             return "report"
 
-    return "chat"
+    # 5. Default — plain query (SELECT)
+    return "query"
 
 
 # ── SQL Auto-Correction ────────────────────────────────────────────────────
@@ -963,16 +1017,64 @@ class ReportPipeline:
             logger.info("Charts after cleanup: %d of %d valid",
                         len(valid_charts), len(report.get("charts", [])))
 
+            # ── Fallback chart filling — guarantee ≥5 charts always ───────
+            # When LLM SQL fails, fill remaining slots from pre-verified templates.
+            if len(valid_charts) < 5:
+                from ai.report_fallback_charts import detect_report_topic, get_fallback_charts
+                topic = detect_report_topic(question)
+                logger.info(
+                    "Only %d LLM charts passed — filling from fallback library (topic: %s)",
+                    len(valid_charts), topic,
+                )
+                fallbacks = get_fallback_charts(topic)
+
+                # Track which fallback IDs are already represented (avoid duplicates)
+                existing_ids = {c.get("id", "") for c in valid_charts}
+
+                for fb_chart in fallbacks:
+                    if len(valid_charts) >= 6:
+                        break
+                    if fb_chart["id"] in existing_ids:
+                        continue
+                    fb_copy = dict(fb_chart)   # shallow copy — don't mutate the template
+                    executed = self._execute_chart_sql(fb_copy)
+                    if (
+                        executed.get("data")
+                        and len(executed["data"]) >= 2
+                        and not executed.get("error")
+                    ):
+                        # Apply smart type fix to fallback charts too
+                        self._smart_fix_chart_type(executed)
+                        valid_charts.append(executed)
+                        existing_ids.add(fb_chart["id"])
+                        logger.info(
+                            "Fallback chart added: '%s' (%d rows)",
+                            fb_chart["title"], len(executed["data"]),
+                        )
+
+                report["charts"] = valid_charts
+                logger.info("Charts after fallback fill: %d total", len(valid_charts))
+
         # ── Smart chart-type auto-correction based on actual data ──────
+        # Only fixes data-shape issues (e.g. daily→monthly aggregation,
+        # pie with too many slices). Does NOT override the AI's type choice.
         if "charts" in report:
             for chart in report["charts"]:
                 self._smart_fix_chart_type(chart)
 
-        # ── Enforce chart type diversity (no duplicate types) ─────────
-        if "charts" in report and len(report["charts"]) > 1:
-            report["charts"] = self._enforce_chart_diversity(report["charts"])
-
-        logger.info("Report generation complete — all SQL executed")
+        final_chart_count = len(report.get("charts", []))
+        final_kpi_count = len(report.get("kpis", []))
+        logger.info(
+            "Report generation complete — %d KPIs, %d charts survived SQL execution",
+            final_kpi_count, final_chart_count,
+        )
+        if final_chart_count < 5:
+            logger.warning(
+                "Only %d charts available after cleanup (expected ≥5). "
+                "Some of the AI's SQL queries likely failed or returned empty data. "
+                "Check earlier log lines for 'Removing chart' entries to see which ones failed.",
+                final_chart_count,
+            )
 
         # ── Detect applicable filters based on SQL content ────────────
         applicable_filters = self._detect_applicable_filters(report)

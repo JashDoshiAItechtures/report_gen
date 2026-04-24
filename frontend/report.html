@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/style.css?v=20260408" />
+    <link rel="stylesheet" href="/static/style.css?v=20260423" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
         /* ── Report Page Layout ──────────────────────────────── */
@@ -140,10 +140,13 @@
         .kpi-eye-btn:hover { opacity: 1; background: rgba(99,102,241,0.12); color: var(--accent-indigo); }
         .kpi-eye-btn svg { width: 14px; height: 14px; }
 
-        /* ── Charts Grid — Premium ────────────────────────────── */
+        /* ── Charts Grid — Compact Premium ────────────────────────────── */
         .charts-grid {
             max-width: 1400px; margin: 0 auto 1rem;
-            display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;
+            display: grid; grid-template-columns: repeat(2, 1fr); gap: 0;
+            border-radius: 16px; overflow: hidden;
+            border: 1px solid rgba(99,102,241,0.12);
+            box-shadow: 0 2px 16px rgba(99,102,241,0.06), 0 1px 3px rgba(0,0,0,0.04);
         }
         .charts-grid .chart-card:last-child:nth-child(odd) {
             grid-column: 1 / -1;
@@ -152,18 +155,22 @@
             background: rgba(255,255,255,0.55);
             backdrop-filter: blur(12px) saturate(1.4);
             -webkit-backdrop-filter: blur(12px) saturate(1.4);
-            border: 1px solid rgba(99,102,241,0.12);
-            border-radius: 16px; padding: 1rem 1.1rem; transition: all 0.25s ease;
-            box-shadow: 0 2px 16px rgba(99,102,241,0.06), 0 1px 3px rgba(0,0,0,0.04);
+            border-right: 1px solid rgba(99,102,241,0.12);
+            border-bottom: 1px solid rgba(99,102,241,0.12);
+            border-radius: 0; padding: 1rem 1.1rem; transition: all 0.25s ease;
+            box-shadow: none;
         }
+        .chart-card:nth-child(even) { border-right: none; }
+        .chart-card:last-child { border-bottom: none; }
+        .charts-grid .chart-card:nth-last-child(2):nth-child(odd) { border-bottom: none; }
         [data-theme="dark"] .chart-card {
             background: rgba(22,27,34,0.55);
             border-color: rgba(99,102,241,0.18);
-            box-shadow: 0 2px 16px rgba(0,0,0,0.25);
+            box-shadow: none;
         }
         .chart-card:hover {
-            box-shadow: 0 12px 32px rgba(99,102,241,0.12), 0 2px 8px rgba(0,0,0,0.06);
-            transform: translateY(-2px);
+            box-shadow: none;
+            background: rgba(99,102,241,0.05);
             border-color: rgba(99,102,241,0.22);
         }
         .chart-full-width { grid-column: 1 / -1; }
@@ -175,6 +182,22 @@
             display: flex; align-items: center; justify-content: center; height: 100%;
             font-size: 0.72rem; color: var(--accent-rose); text-align: center; padding: 0.5rem;
         }
+        /* ── Chart type badge ──────────────────────────────── */
+        .chart-type-badge {
+            font-size: 0.52rem; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 0.06em; padding: 0.14rem 0.4rem; border-radius: 4px;
+            background: rgba(99,102,241,0.08); color: var(--accent-indigo);
+            border: 1px solid rgba(99,102,241,0.15); white-space: nowrap; flex-shrink: 0;
+        }
+        /* ── Per-chart AI insight text ──────────────────────── */
+        .chart-insight-text {
+            font-size: 0.68rem; color: var(--text-muted); font-style: italic;
+            padding: 0.4rem 0.75rem 0.55rem; line-height: 1.55; text-align: center;
+            border-top: 1px dashed var(--border-subtle); margin-top: 0.25rem;
+            background: rgba(99,102,241,0.02);
+        }
+        [data-theme="dark"] .chart-insight-text { color: #64748b; }
+
 
         /* ── Data Table — Premium ─────────────────────────────── */
         .report-table-section {
@@ -310,6 +333,6 @@
     </div>
 </div>
 
-<script src="/static/report.js?v=20260410"></script>
+<script src="/static/report.js?v=20260423"></script>
 </body>
 </html>

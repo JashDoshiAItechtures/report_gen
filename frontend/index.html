@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI SQL Analyst</title>
+    <title>AI Data Assistant</title>
+    <meta name="description" content="Unified AI Data Assistant — query, modify, and visualize your database in one conversation." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/style.css?v=20260410" />
+    <link rel="stylesheet" href="/static/style.css?v=20260422" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -31,9 +32,9 @@
                         <path d="M2 12l10 5 10-5"/>
                     </svg>
                 </div>
-                <span class="sidebar-brand-name">SQL Analyst</span>
+                <span class="sidebar-brand-name">AI Assistant</span>
             </div>
-            <button class="sidebar-new-btn" id="newChatBtn" title="New chat">
+            <button class="sidebar-new-btn" id="newChatBtn" title="New conversation">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                 </svg>
@@ -54,7 +55,8 @@
                     <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
                 </svg>
             </button>
-            <span class="topbar-title" id="topbarTitle">New Chat</span>
+            <span class="topbar-title" id="topbarTitle">New Conversation</span>
+
             <div class="model-switcher">
                 <span class="switcher-label">Model</span>
                 <div class="switcher-track" id="modelSwitcher">
@@ -78,18 +80,6 @@
                     </button>
                 </div>
             </div>
-
-            <div class="model-switcher mode-switcher-area">
-                <span class="switcher-label">Mode</span>
-                <div class="switcher-track mode-track" id="modeSwitcher">
-                    <button class="switcher-btn active" data-mode="chat">
-                        <span class="btn-dot"></span>SQL Chat
-                    </button>
-                    <button class="switcher-btn" data-mode="report">
-                        <span class="btn-dot"></span>Report
-                    </button>
-                </div>
-            </div>
         </div>
 
         <!-- Chat thread -->
@@ -103,19 +93,15 @@
                         <path d="M2 12l10 5 10-5"/>
                     </svg>
                 </div>
-                <h2>AI SQL Analyst</h2>
-                <p>Ask anything about your data. I'll write the SQL, run it, and explain the results.</p>
+                <h1>AI Data Assistant</h1>
+                <p>Query data, generate reports, visualize charts, or modify records — all in one conversation.</p>
                 <div class="welcome-chips" id="welcomeChips">
-                    <button class="chip" data-q="What is the total revenue this year?">Total revenue this year</button>
-                    <button class="chip" data-q="Top 10 customers by revenue">Top 10 customers</button>
-                    <button class="chip" data-q="Which vendor has the highest purchase order value?">Top vendor by PO value</button>
-                    <button class="chip" data-q="What is the average order value?">Average order value</button>
-                </div>
-                <div class="welcome-chips welcome-chips-report hidden" id="welcomeChipsReport">
-                    <button class="chip chip-report" data-q="Show me the sales performance report">Sales Performance Report</button>
-                    <button class="chip chip-report" data-q="Show me the top 10 gold products analysis">Top Gold Products Analysis</button>
-                    <button class="chip chip-report" data-q="Revenue analysis by category">Revenue by Category</button>
-                    <button class="chip chip-report" data-q="Customer concentration and order analysis">Customer Analysis</button>
+                    <button class="chip" data-q="What is the total revenue this year?">💰 Total revenue this year</button>
+                    <button class="chip" data-q="Top 10 customers by revenue">👥 Top 10 customers</button>
+                    <button class="chip" data-q="Show me a bar chart of sales by category">📊 Sales by category chart</button>
+                    <button class="chip" data-q="Generate a sales performance report">📋 Sales performance report</button>
+                    <button class="chip" data-q="Which vendor has the highest purchase order value?">🏭 Top vendor by PO value</button>
+                    <button class="chip" data-q="Update price of PROD-0266 to 15000">✏️ Update product price</button>
                 </div>
             </div>
             <!-- Messages injected here -->
@@ -127,7 +113,7 @@
                 <textarea
                     id="questionInput"
                     rows="1"
-                    placeholder="Ask a question about your data..."
+                    placeholder="Ask a question, generate a report, modify data, or request a chart…"
                     spellcheck="false"
                 ></textarea>
                 <button id="submitBtn" class="send-btn" title="Send">
@@ -169,6 +155,6 @@
     </div>
 </div>
 
-<script src="/static/script.js?v=20260410"></script>
+<script src="/static/script.js?v=20260422"></script>
 </body>
 </html>

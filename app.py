@@ -124,6 +124,18 @@ class ReportModifyRequest(BaseModel):
     provider: str = "groq"
 
 
+class ModifyPreviewRequest(BaseModel):
+    question: str
+    provider: str = "groq"
+    conversation_id: str | None = None
+
+
+class ModifyExecuteRequest(BaseModel):
+    sql: str
+    provider: str = "groq"
+    conversation_id: str | None = None
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 @app.post("/generate-sql", response_model=GenerateSQLResponse)
@@ -168,58 +180,75 @@ def execute_sql_endpoint(req: ExecuteSQLRequest):
     )
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 def chat_endpoint(req: QuestionRequest):
-    from ai.pipeline import SQLAnalystPipeline
     from ai.report_generator import classify_intent
     from db.memory import get_recent_history, add_turn
 
     logger.info(
-        "CHAT request | provider=%s | conversation_id=%s | question=%s",
+        "CHAT request | provider=%s | conv=%s | question=%s",
         req.provider,
         req.conversation_id or "default",
-        req.question,
+        req.question[:100],
     )
 
-    # Classify intent — deterministic, no LLM call
+    # Deterministic intent classification — no LLM call
     intent = classify_intent(req.question)
-    logger.info("CHAT intent classified as: %s", intent)
+    logger.info("CHAT intent: %s", intent)
 
     conversation_id = req.conversation_id or "default"
 
-    history = get_recent_history(conversation_id, limit=5)
-
-    # Augment the question with recent conversation context
-    if history:
-        logger.info(
-            "CHAT context | conversation_id=%s | history_turns=%d",
-            conversation_id,
-            len(history),
+    # ── MODIFY: generate SQL preview, don't execute ───────────────────────
+    if intent == "modify":
+        from ai.modification_pipeline import ModificationPipeline
+        mod_pipeline = ModificationPipeline(provider=req.provider)
+        result = mod_pipeline.preview(req.question)
+        # Store a summary turn so context is preserved
+        add_turn(
+            conversation_id, req.question,
+            f"[Modification request] {result.get('intent_summary', req.question)}",
+            "", None,
         )
-        history_lines: list[str] = ["You are in a multi-turn conversation. Here are the recent exchanges:"]
+        return result
+
+    # ── REPORT / EXPORT: skip SQL pipeline, tell frontend to open report ───
+    if intent in ("report", "export"):
+        add_turn(conversation_id, req.question, "Report generation requested.", "", None)
+        return {
+            "mode": "report",
+            "sql": "",
+            "data": [],
+            "row_count": 0,
+            "answer": (
+                "I'll generate a comprehensive analytics report for that. "
+                "Click the button below to open your report dashboard."
+            ),
+            "insights": "",
+        }
+
+    # ── QUERY / CHART: run SQL pipeline ──────────────────────────────
+    history = get_recent_history(conversation_id, limit=5)
+    if history:
+        history_lines = ["You are in a multi-turn conversation. Here are the recent exchanges:"]
         for turn in history:
             history_lines.append(f"User: {turn['question']}")
             history_lines.append(f"Assistant: {turn['answer']}")
         history_lines.append(f"Now the user asks: {req.question}")
         question_with_context = "\n".join(history_lines)
     else:
-        logger.info(
-            "CHAT context | conversation_id=%s | history_turns=0 (no prior context used)",
-            conversation_id,
-        )
         question_with_context = req.question
 
+    from ai.pipeline import SQLAnalystPipeline
     pipeline = SQLAnalystPipeline(provider=req.provider)
     result = pipeline.run(question_with_context)
 
     logger.info(
-        "CHAT result | conversation_id=%s | used_context=%s | sql_preview=%s",
+        "CHAT result | conv=%s | sql=%s",
         conversation_id,
-        "yes" if history else "no",
         (result.get("sql") or "").replace("\n", " ")[:200],
     )
 
-    # Persist this turn for future context (store up to 200 rows so modal can show them)
+    # Persist turn for context memory
     add_turn(
         conversation_id,
         req.question,
@@ -228,14 +257,59 @@ def chat_endpoint(req: QuestionRequest):
         query_result=(result["data"][:200] if result.get("data") else None),
     )
 
-    return ChatResponse(
-        mode="chat",
-        sql=result["sql"],
-        data=result["data"],
-        row_count=len(result.get("data") or []),
-        answer=result["answer"],
-        insights=result["insights"],
-    )
+    data = result.get("data") or []
+
+    # Decide whether to surface as a chart
+    chart_type = None
+    if intent == "chart" or _should_suggest_chart(data):
+        chart_type = _suggest_chart_type(data)
+
+    mode = "chart" if chart_type else "chat"
+
+    response = {
+        "mode": mode,
+        "sql": result["sql"],
+        "data": data,
+        "row_count": len(data),
+        "answer": result["answer"],
+        "insights": result["insights"],
+    }
+    if chart_type:
+        response["chart_type"] = chart_type
+    return response
+
+
+def _should_suggest_chart(data: list) -> bool:
+    """Return True when data is small and numeric — naturally chart-able."""
+    if not data or len(data) < 2 or len(data) > 20:
+        return False
+    keys = list(data[0].keys())
+    if len(keys) < 2:
+        return False
+    try:
+        float(data[0][keys[1]])
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _suggest_chart_type(data: list) -> str | None:
+    """Pick the most suitable Chart.js chart type for the result set."""
+    if not data:
+        return None
+    keys = list(data[0].keys())
+    if len(keys) < 2:
+        return None
+    n = len(data)
+    first_label = str(data[0][keys[0]]).lower()
+    # Date-like labels → line chart
+    if any(x in first_label for x in ["-", "/", "jan", "feb", "mar", "q1", "q2", "2023", "2024", "2025"]):
+        return "line"
+    # 2–8 categories → doughnut
+    if 2 <= n <= 8:
+        return "doughnut"
+    # Many categories → horizontal bar
+    return "bar"
 
 
 @app.post("/report")
@@ -307,6 +381,36 @@ def report_modify_endpoint(req: ReportModifyRequest):
     logger.info("REPORT MODIFY | command=%s", req.modification)
     pipeline = ReportPipeline(provider=req.provider)
     return pipeline.modify(req.report_json, req.modification)
+
+
+# ── Data modification endpoints (two-phase: preview then execute) ────────────
+
+@app.post("/modify/preview")
+def modify_preview_endpoint(req: ModifyPreviewRequest):
+    """Generate a modification SQL for user review — does NOT execute it."""
+    from ai.modification_pipeline import ModificationPipeline
+
+    logger.info("MODIFY PREVIEW | question=%s", req.question[:120])
+    pipeline = ModificationPipeline(provider=req.provider)
+    return pipeline.preview(req.question)
+
+
+@app.post("/modify/execute")
+def modify_execute_endpoint(req: ModifyExecuteRequest):
+    """Execute a previously previewed SQL after user explicitly approves it."""
+    from ai.modification_pipeline import ModificationPipeline
+    from db.memory import add_turn
+
+    logger.info("MODIFY EXECUTE | sql=%s", req.sql[:120])
+    pipeline = ModificationPipeline(provider=req.provider)
+    result = pipeline.execute(req.sql)
+
+    # Store in conversation memory
+    conv_id = req.conversation_id or "default"
+    if result.get("mode") == "modify_success":
+        add_turn(conv_id, f"[Executed SQL] {req.sql}", result.get("message", ""), req.sql, None)
+
+    return result
 
 
 # ── Filter values endpoint ──────────────────────────────────────────────────

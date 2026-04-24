@@ -1,5 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   AI SQL Analyst — Chat Interface
+   AI Data Assistant — Unified Chat Interface
+   Handles: query / chart / report / confirm_modify / modify_success / modify_error
    ═══════════════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -15,77 +16,15 @@
     const sidebarToggle  = document.getElementById("sidebarToggle");
     const newChatBtn     = document.getElementById("newChatBtn");
     const modelSwitcher  = document.getElementById("modelSwitcher");
-    const modeSwitcher    = document.getElementById("modeSwitcher");
-    const welcomeChips   = document.getElementById("welcomeChips");
-    const welcomeChipsReport = document.getElementById("welcomeChipsReport");
     const topbarTitle    = document.getElementById("topbarTitle");
 
     let selectedProvider = "groq";
     let isLoading        = false;
-    let currentMode      = "chat"; // "chat" | "report"
 
-    // ── Report modification state ─────────────────────────────────────
-    let latestReportData = null;   // Latest report JSON for modifications
-    let latestReportId   = null;   // sessionStorage key for the report
-    let reportWindow     = null;   // Reference to the report tab
-
-    // ── Modification Detection ───────────────────────────────────────
-    function isModificationCommand(text) {
-        const q = text.toLowerCase().trim();
-
-        // Keyword-based detection
-        const modKeywords = [
-            "change", "replace", "swap", "switch", "modify", "update", "edit",
-            "add a kpi", "add kpi", "add a chart", "add chart", "add one more",
-            "remove the", "remove kpi", "remove chart", "delete the", "delete kpi",
-            "rename", "make it", "convert to", "convert the", "turn into", "turn the",
-            "to a bar", "to bar", "to a pie", "to pie", "to a line", "to line",
-            "to a line graph", "to line graph", "to a bar chart", "to a bar graph",
-            "to doughnut", "to a doughnut", "to area", "to an area", "to horizontal",
-            "to a stacked", "to stacked", "to a scatter",
-            "instead of", "more kpi", "another kpi", "another chart",
-            "change color", "change the color", "update the title",
-            "make the", "set the", "show it as", "display as", "show as",
-        ];
-        if (modKeywords.some(kw => q.includes(kw))) return true;
-
-        // Regex-based detection — catches 'change the X chart to Y' style commands
-        const modPatterns = [
-            /\bchange\b.+\b(chart|graph|kpi|metric|plot|title|color|legend)\b/i,
-            /\b(convert|turn|switch|transform)\b.+\b(chart|graph|kpi|plot)\b/i,
-            /\b(pie|bar|line|doughnut|area|horizontal|stacked)\b.+\b(chart|graph)\b.+\b(to|into|as)\b/i,
-            /\bto\s+a?\s*(bar|line|pie|doughnut|area|horizontalbar|stackedbar)\b/i,
-            /\b(remove|delete|hide|drop)\b.+\b(chart|kpi|metric|graph|insight)\b/i,
-            /\badd\b.+\b(chart|kpi|metric|graph|insight)\b/i,
-            /\b(rename|relabel|retitle)\b/i,
-        ];
-        return modPatterns.some(p => p.test(q));
-    }
-
-    // ── Strip executed data from report before sending to LLM ────────
-    function stripReportData(report) {
-        const clean = JSON.parse(JSON.stringify(report)); // deep clone
-        // Strip KPI values (LLM only needs SQL + structure)
-        if (clean.kpis) {
-            clean.kpis.forEach(kpi => {
-                delete kpi.value;
-                delete kpi.error;
-            });
-        }
-        // Strip chart data (LLM only needs SQL + type + config)
-        if (clean.charts) {
-            clean.charts.forEach(chart => {
-                delete chart.data;
-                delete chart.error;
-            });
-        }
-        // Strip table data
-        if (clean.table) {
-            delete clean.table.data;
-            delete clean.table.error;
-        }
-        return clean;
-    }
+    // ── Report modification state (for /report/modify flow) ───────────────
+    let latestReportData = null;
+    let latestReportId   = null;
+    let reportWindow     = null;
 
     // ── Theme ──────────────────────────────────────────────────────────────
     const themeSwitcher = document.getElementById("themeSwitcher");
@@ -93,41 +32,39 @@
     function applyTheme(theme) {
         document.documentElement.setAttribute("data-theme", theme);
         localStorage.setItem("sqlbot_theme", theme);
-        themeSwitcher.querySelectorAll(".switcher-btn").forEach(b => {
-            b.classList.toggle("active", b.dataset.theme === theme);
-        });
+        if (themeSwitcher) {
+            themeSwitcher.querySelectorAll(".switcher-btn").forEach(b => {
+                b.classList.toggle("active", b.dataset.theme === theme);
+            });
+        }
     }
 
-    // Apply saved or system preference on load
     const savedTheme = localStorage.getItem("sqlbot_theme") ||
         (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     applyTheme(savedTheme);
 
-    themeSwitcher.addEventListener("click", e => {
-        const btn = e.target.closest(".switcher-btn");
-        if (btn) applyTheme(btn.dataset.theme);
-    });
+    if (themeSwitcher) {
+        themeSwitcher.addEventListener("click", e => {
+            const btn = e.target.closest(".switcher-btn");
+            if (btn) applyTheme(btn.dataset.theme);
+        });
+    }
 
     // ── Conversation management ────────────────────────────────────────────
-    // Each conversation: { id, title, created_at, mode }
+    const _CONV_STORAGE_KEY = "sqlbot_conversation_id";
+
     function getAllConversations() {
         try { return JSON.parse(localStorage.getItem("sqlbot_conversations") || "[]"); }
         catch { return []; }
     }
     function getConversations() {
-        // Return only conversations for the current mode
-        return getAllConversations().filter(c => (c.mode || "chat") === currentMode);
+        return getAllConversations();
     }
     function saveConversations(list) {
         localStorage.setItem("sqlbot_conversations", JSON.stringify(list));
     }
 
-    // ── Per-mode conversation IDs (chat and report are fully separate) ────
-    function convStorageKey(mode) {
-        return "sqlbot_conversation_id_" + (mode || currentMode);
-    }
-
-    let currentConvId = localStorage.getItem(convStorageKey("chat")) || newConvId();
+    let currentConvId = localStorage.getItem(_CONV_STORAGE_KEY) || newConvId();
 
     function newConvId() {
         return (window.crypto && window.crypto.randomUUID)
@@ -137,13 +74,13 @@
 
     function setCurrentConv(id) {
         currentConvId = id;
-        localStorage.setItem(convStorageKey(currentMode), id);
+        localStorage.setItem(_CONV_STORAGE_KEY, id);
     }
 
     function addConversationToList(id, title) {
         const list = getAllConversations();
         if (!list.find(c => c.id === id)) {
-            list.unshift({ id, title, created_at: new Date().toISOString(), mode: currentMode });
+            list.unshift({ id, title, created_at: new Date().toISOString() });
             saveConversations(list);
         }
         renderSidebarList();
@@ -186,7 +123,7 @@
                     </svg>
                 </div>
                 <div class="sidebar-item-content">
-                    <div class="sidebar-item-question">${escapeHtml(conv.title || "New chat")}</div>
+                    <div class="sidebar-item-question">${escapeHtml(conv.title || "New conversation")}</div>
                     <div class="sidebar-item-meta">${formatDate(conv.created_at)}</div>
                 </div>
                 <button class="sidebar-delete-btn" title="Delete conversation" data-id="${conv.id}">
@@ -210,7 +147,6 @@
     }
 
     async function deleteConversation(id) {
-        // Delete all turns for this conversation from DB
         try {
             const res = await fetch(`/history?conversation_id=${encodeURIComponent(id)}`);
             if (res.ok) {
@@ -221,11 +157,9 @@
             }
         } catch (_) {}
 
-        // Remove from localStorage
         const list = getAllConversations().filter(c => c.id !== id);
         saveConversations(list);
 
-        // If we deleted the active one, start a new chat
         if (id === currentConvId) {
             startNewChat();
         } else {
@@ -235,7 +169,7 @@
 
     async function loadConversation(id, title) {
         setCurrentConv(id);
-        topbarTitle.textContent = title || "Chat";
+        topbarTitle.textContent = title || "Conversation";
         clearChatThread();
 
         try {
@@ -260,42 +194,21 @@
     function startNewChat() {
         const id = newConvId();
         setCurrentConv(id);
-        topbarTitle.textContent = "New Chat";
+        topbarTitle.textContent = "New Conversation";
         clearChatThread();
         showWelcome();
         questionInput.value = "";
         questionInput.style.height = "";
         renderSidebarList();
-        // Clear report modification state
+        // Clear report state
         latestReportData = null;
         latestReportId = null;
+        reportWindow = null;
     }
 
     // ── Welcome chips ──────────────────────────────────────────────────────
     document.querySelectorAll(".chip").forEach(chip => {
         chip.addEventListener("click", () => {
-            // Auto-switch mode based on chip type
-            const isReport = chip.classList.contains("chip-report");
-            if (isReport && currentMode !== "report") {
-                currentMode = "report";
-                if (modeSwitcher) {
-                    modeSwitcher.querySelectorAll(".switcher-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === "report"));
-                }
-                questionInput.placeholder = "Describe the report you want...";
-                // Ensure per-mode conversation is set
-                if (!localStorage.getItem(convStorageKey("report"))) {
-                    setCurrentConv(newConvId());
-                }
-            } else if (!isReport && currentMode !== "chat") {
-                currentMode = "chat";
-                if (modeSwitcher) {
-                    modeSwitcher.querySelectorAll(".switcher-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === "chat"));
-                }
-                questionInput.placeholder = "Ask a question about your data...";
-                if (!localStorage.getItem(convStorageKey("chat"))) {
-                    setCurrentConv(newConvId());
-                }
-            }
             questionInput.value = chip.dataset.q;
             questionInput.dispatchEvent(new Event("input"));
             handleSubmit();
@@ -303,53 +216,13 @@
     });
 
     // ── Model switcher ─────────────────────────────────────────────────────
-    modelSwitcher.addEventListener("click", e => {
-        const btn = e.target.closest(".switcher-btn");
-        if (!btn) return;
-        modelSwitcher.querySelectorAll(".switcher-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        selectedProvider = btn.dataset.provider;
-    });
-
-    // ── Mode switcher ──────────────────────────────────────────────────────
-
-    if (modeSwitcher) {
-        modeSwitcher.addEventListener("click", e => {
+    if (modelSwitcher) {
+        modelSwitcher.addEventListener("click", e => {
             const btn = e.target.closest(".switcher-btn");
             if (!btn) return;
-            const newMode = btn.dataset.mode;
-            if (newMode === currentMode) return; // no change
-
-            modeSwitcher.querySelectorAll(".switcher-btn").forEach(b => b.classList.remove("active"));
+            modelSwitcher.querySelectorAll(".switcher-btn").forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
-
-            // ── Save current mode's conversation ID before switching ──
-            localStorage.setItem(convStorageKey(currentMode), currentConvId);
-
-            currentMode = newMode;
-
-            // ── Restore the previous conversation for the new mode ────
-            const savedId = localStorage.getItem(convStorageKey(newMode));
-            if (savedId) {
-                // Find the conversation to get its title
-                const convList = getAllConversations();
-                const conv = convList.find(c => c.id === savedId);
-                loadConversation(savedId, conv ? conv.title : "Chat");
-            } else {
-                // First time entering this mode — start fresh
-                startNewChat();
-            }
-
-            // Toggle welcome chips & placeholder
-            if (currentMode === "report") {
-                if (welcomeChips) welcomeChips.classList.add("hidden");
-                if (welcomeChipsReport) welcomeChipsReport.classList.remove("hidden");
-                questionInput.placeholder = "Describe the report you want (e.g., sales performance analysis, top products by revenue...)";
-            } else {
-                if (welcomeChips) welcomeChips.classList.remove("hidden");
-                if (welcomeChipsReport) welcomeChipsReport.classList.add("hidden");
-                questionInput.placeholder = "Ask a question about your data...";
-            }
+            selectedProvider = btn.dataset.provider;
         });
     }
 
@@ -368,6 +241,7 @@
         }
     });
 
+    // ── Unified Submit Handler ─────────────────────────────────────────────
     async function handleSubmit() {
         const question = questionInput.value.trim();
         if (!question || isLoading) return;
@@ -375,122 +249,12 @@
         isLoading = true;
         submitBtn.disabled = true;
 
-        // Hide welcome, show user message immediately
         hideWelcome();
         appendUserMessage(question);
         questionInput.value = "";
         questionInput.style.height = "";
         scrollToBottom();
 
-        // ── Report Mode: generate or modify ──
-        if (currentMode === "report") {
-            const typingEl = appendTypingIndicator();
-            scrollToBottom();
-
-            // Allow mode switching while report generates
-            isLoading = false;
-            submitBtn.disabled = false;
-
-            // Capture the conversation context so mode-switching doesn't break it
-            const capturedConvId = currentConvId;
-
-            // ── Smart detection: is this a MODIFICATION or a NEW report? ──
-            const isModification = latestReportData !== null && isModificationCommand(question);
-
-            let fetchPromise;
-
-            if (isModification) {
-                // ── Modify the existing report ──
-                // Strip executed data to keep payload small for the LLM
-                const cleanReport = stripReportData(latestReportData);
-                fetchPromise = fetch("/report/modify", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        report_json: JSON.stringify(cleanReport),
-                        modification: question,
-                        provider: selectedProvider,
-                    }),
-                });
-            } else {
-                // ── Generate a new report ──
-                // Clear any previous report state
-                latestReportData = null;
-                latestReportId = null;
-                reportWindow = null;
-                fetchPromise = fetch("/report", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ question, provider: selectedProvider }),
-                });
-            }
-
-            fetchPromise
-            .then(res => {
-                if (!res.ok) throw new Error(isModification ? "Report modification failed" : "Report generation failed");
-                return res.json();
-            })
-            .then(data => {
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
-                // Store the report data for future modifications
-                latestReportData = data.report;
-
-                // Use same report ID if modifying (replaces in sessionStorage)
-                const reportId = isModification && latestReportId ? latestReportId : "rpt_" + Date.now();
-                latestReportId = reportId;
-
-                sessionStorage.setItem(reportId, JSON.stringify(data));
-                // Preserve the original report question — don't overwrite with the modification command
-                if (!isModification) {
-                    sessionStorage.setItem(reportId + "_question", question);
-                }
-                sessionStorage.setItem(reportId + "_provider", selectedProvider);
-                sessionStorage.setItem(reportId + "_theme", document.documentElement.getAttribute("data-theme") || "light");
-
-                // Only update UI if still on the same conversation
-                if (currentConvId === capturedConvId) {
-                    typingEl.remove();
-                    if (isModification) {
-                        appendAssistantMessage("✅ Report updated successfully! The report tab has been refreshed.");
-                    } else {
-                        appendReportSuccessMessage(question, reportId);
-                    }
-                    scrollToBottom();
-                } else {
-                    typingEl.remove();
-                }
-
-                // Open new tab or refresh existing one
-                if (isModification && reportWindow && !reportWindow.closed) {
-                    reportWindow.location.href = `/report-view?id=${reportId}&t=${Date.now()}`;
-                    reportWindow.focus();
-                } else {
-                    reportWindow = window.open(`/report-view?id=${reportId}`, "_blank");
-                }
-            })
-            .catch(err => {
-                if (currentConvId === capturedConvId) {
-                    typingEl.remove();
-                    appendErrorMessage(err.message || "Report operation failed.");
-                    scrollToBottom();
-                } else {
-                    typingEl.remove();
-                }
-            });
-
-            // Update sidebar
-            const convs = getConversations();
-            if (!convs.find(c => c.id === capturedConvId)) {
-                addConversationToList(capturedConvId, question);
-                topbarTitle.textContent = question.length > 40 ? question.slice(0, 40) + "..." : question;
-            }
-            return;
-        }
-
-        // ── Chat Mode: normal /chat flow ──
         const typingEl = appendTypingIndicator();
         scrollToBottom();
 
@@ -513,18 +277,30 @@
             } else {
                 const data = await res.json();
 
-                // Check if this is a report intent
+                // ── Route by mode ──
                 if (data.mode === "report") {
+                    // Backend detected report intent — show generate button
                     appendReportMessage(question, data);
+                } else if (data.mode === "chart") {
+                    // Inline chart in chat
+                    appendChartMessage(data);
+                } else if (data.mode === "confirm_modify") {
+                    // Modification preview — show confirm card
+                    appendConfirmModifyMessage(data);
+                } else if (data.mode === "modify_success") {
+                    appendModifyResultMessage(data.message || "Done!", true);
+                } else if (data.mode === "modify_error") {
+                    appendModifyResultMessage(data.error || "Modification failed.", false);
                 } else {
+                    // Default: plain SQL chat response
                     appendAIMessage(data);
                 }
 
-                // Update sidebar: first question becomes the conversation title
+                // Update sidebar
                 const convs = getConversations();
                 if (!convs.find(c => c.id === currentConvId)) {
                     addConversationToList(currentConvId, question);
-                    topbarTitle.textContent = question.length > 40 ? question.slice(0, 40) + "..." : question;
+                    topbarTitle.textContent = question.length > 40 ? question.slice(0, 40) + "…" : question;
                 }
             }
         } catch (err) {
@@ -537,11 +313,12 @@
         scrollToBottom();
     }
 
-    // ── Report message (shows button to open report in new tab) ───────────
+    // ── Report card (mode: "report") ───────────────────────────────────────
+    // Shown when backend classifies the intent as "report".
+    // User clicks "Generate Report" → calls /report → opens in new tab.
     function appendReportMessage(question, chatData) {
         const el = document.createElement("div");
         el.className = "msg msg-ai";
-
         const reportId = "rpt_" + Date.now();
 
         el.innerHTML = `
@@ -552,7 +329,7 @@
                 </svg>
             </div>
             <div class="ai-body">
-                <div class="ai-answer">${escapeHtml(chatData.answer)}</div>
+                <div class="ai-answer">${escapeHtml(chatData.answer || "I'll generate an analytics report for that.")}</div>
                 <div class="report-trigger-card">
                     <div class="report-trigger-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -562,10 +339,10 @@
                         </svg>
                     </div>
                     <div class="report-trigger-info">
-                        <div class="report-trigger-title">Analytics Report Detected</div>
-                        <div class="report-trigger-desc">I can generate a comprehensive dashboard with KPIs, charts, data tables, and insights for your query.</div>
+                        <div class="report-trigger-title">Analytics Report</div>
+                        <div class="report-trigger-desc">Generate a full dashboard with KPIs, charts, data tables, and AI insights.</div>
                     </div>
-                    <button class="report-trigger-btn" data-report-id="${reportId}" data-question="${escapeHtml(question)}">
+                    <button class="report-trigger-btn" data-report-id="${reportId}" data-question="${escapeAttr(question)}">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
                             <line x1="3" y1="9" x2="21" y2="9"/>
@@ -579,7 +356,6 @@
                 </div>
             </div>`;
 
-        // Wire up the report button
         const btn = el.querySelector(".report-trigger-btn");
         btn.addEventListener("click", () => {
             generateAndOpenReport(question, reportId, btn);
@@ -588,7 +364,7 @@
         chatThread.appendChild(el);
     }
 
-    // ── Report success message (used by report mode) ──────────────────────
+    // ── Report success message ─────────────────────────────────────────────
     function appendReportSuccessMessage(question, reportId) {
         const el = document.createElement("div");
         el.className = "msg msg-ai";
@@ -623,86 +399,77 @@
         chatThread.appendChild(el);
     }
 
+    // ── Generate and open report (calls /report endpoint) ─────────────────
     async function generateAndOpenReport(question, reportId, btn) {
-        // Disable button and show loading
         btn.disabled = true;
-        btn.innerHTML = `
-            <div class="report-btn-spinner"></div>
-            Generating Report...
-        `;
+        btn.innerHTML = `<div class="report-btn-spinner"></div>Generating Report…`;
+
+        // Open placeholder tab synchronously to avoid popup blocking
+        let reportWin = window.open("/report-view?id=loading", "_blank");
 
         try {
             const res = await fetch("/report", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    question,
-                    provider: selectedProvider,
-                }),
+                body: JSON.stringify({ question, provider: selectedProvider }),
             });
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ detail: res.statusText }));
+                if (reportWin && !reportWin.closed) reportWin.close();
                 btn.disabled = false;
-                btn.innerHTML = `
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-                    Retry Report
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="report-trigger-arrow"><polyline points="9 18 15 12 9 6"/></svg>
-                `;
+                btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Retry Report<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="report-trigger-arrow"><polyline points="9 18 15 12 9 6"/></svg>`;
                 appendErrorMessage("Report generation failed: " + (err.detail || err.error || "Unknown error"));
                 return;
             }
 
             const reportData = await res.json();
 
-            // Store report data in sessionStorage
-            sessionStorage.setItem(reportId, JSON.stringify(reportData));
-            sessionStorage.setItem(reportId + "_question", question);
-            sessionStorage.setItem(reportId + "_provider", selectedProvider);
-            sessionStorage.setItem(reportId + "_theme", document.documentElement.getAttribute("data-theme") || "light");
+            // Store in localStorage — shared across all tabs
+            localStorage.setItem(reportId, JSON.stringify(reportData));
+            localStorage.setItem(reportId + "_question", question);
+            localStorage.setItem(reportId + "_provider", selectedProvider);
+            localStorage.setItem(reportId + "_theme", document.documentElement.getAttribute("data-theme") || "light");
 
-            // Update button to "Open Report"
+            // Track for /report/modify
+            latestReportData = reportData.report;
+            latestReportId = reportId;
+
             btn.disabled = false;
             btn.classList.add("report-trigger-btn-success");
-            btn.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-                Open Report
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="report-trigger-arrow"><polyline points="9 18 15 12 9 6"/></svg>
-            `;
+            btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Open Report<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="report-trigger-arrow"><polyline points="9 18 15 12 9 6"/></svg>`;
+            btn.onclick = () => window.open(`/report-view?id=${reportId}`, "_blank");
 
-            // Re-wire to only open the report (not regenerate)
-            btn.onclick = () => {
+            if (reportWin && !reportWin.closed) {
+                reportWin.location.href = `/report-view?id=${reportId}`;
+            } else {
                 window.open(`/report-view?id=${reportId}`, "_blank");
-            };
-
-            // Auto-open the report
-            window.open(`/report-view?id=${reportId}`, "_blank");
+            }
 
         } catch (err) {
+            if (reportWin && !reportWin.closed) reportWin.close();
             btn.disabled = false;
-            btn.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-                Retry Report
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="report-trigger-arrow"><polyline points="9 18 15 12 9 6"/></svg>
-            `;
+            btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Retry Report<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="report-trigger-arrow"><polyline points="9 18 15 12 9 6"/></svg>`;
             appendErrorMessage("Report generation failed: " + err.message);
         }
 
         scrollToBottom();
     }
 
-    // ── Chat rendering helpers ─────────────────────────────────────────────
-
-    function appendUserMessage(text) {
-        const el = document.createElement("div");
-        el.className = "msg msg-user";
-        el.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
-        chatThread.appendChild(el);
-    }
-
-    function appendTypingIndicator() {
+    // ── Inline Chart Message (mode: "chart") ───────────────────────────────
+    function appendChartMessage(data) {
         const el = document.createElement("div");
         el.className = "msg msg-ai";
+
+        const chartId   = "inline_chart_" + Date.now();
+        const chartType = (data.chart_type || "bar");
+        const typeLabel = chartType.charAt(0).toUpperCase() + chartType.slice(1);
+        const hasSql    = !!data.sql;
+        const hasData   = data.data && data.data.length > 0;
+        const rowLabel  = hasData ? `${data.data.length} row${data.data.length !== 1 ? "s" : ""}` : "0 rows";
+        const sqlId     = "csql_" + Date.now();
+        const tblId     = "ctbl_" + Date.now();
+
         el.innerHTML = `
             <div class="ai-avatar">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -710,13 +477,293 @@
                     <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
                 </svg>
             </div>
-            <div class="typing-indicator">
-                <span></span><span></span><span></span>
+            <div class="ai-body">
+                ${data.answer ? `<div class="ai-answer">${escapeHtml(data.answer)}</div>` : ""}
+                <div class="inline-chart-card">
+                    <div class="inline-chart-header">
+                        <span class="inline-chart-title">Chart</span>
+                        <span class="inline-chart-type-badge">${typeLabel}</span>
+                    </div>
+                    <div class="inline-chart-body">
+                        <canvas id="${chartId}"></canvas>
+                    </div>
+                </div>
+                ${hasSql ? `
+                <div class="ai-section">
+                    <button class="section-toggle" data-target="${sqlId}">
+                        <span class="section-toggle-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        </span>
+                        SQL Query
+                        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="section-body collapsed" id="${sqlId}">
+                        <pre class="sql-code"><code>${escapeHtml(data.sql)}</code></pre>
+                    </div>
+                </div>` : ""}
+                ${hasData ? `
+                <div class="ai-section">
+                    <button class="section-toggle" data-target="${tblId}">
+                        <span class="section-toggle-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                        </span>
+                        Data <span class="row-badge">${rowLabel}</span>
+                        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="section-body collapsed" id="${tblId}">
+                        <div class="table-wrapper">${buildTable(data.data)}</div>
+                    </div>
+                </div>` : ""}
             </div>`;
+
+        el.querySelectorAll(".section-toggle").forEach(btn => {
+            const body = el.querySelector(`#${btn.dataset.target}`);
+            if (!body) return;
+            btn.addEventListener("click", () => {
+                body.classList.toggle("collapsed");
+                btn.classList.toggle("open");
+            });
+        });
+
         chatThread.appendChild(el);
-        return el;
+
+        // Render chart after DOM insertion
+        if (hasData) {
+            requestAnimationFrame(() => {
+                const canvas = document.getElementById(chartId);
+                if (canvas) renderInlineChart(canvas, data);
+            });
+        }
     }
 
+    // ── Inline Chart Renderer (Chart.js) ───────────────────────────────────
+    function renderInlineChart(canvas, data) {
+        const rows = data.data;
+        if (!rows || rows.length === 0) return;
+        const keys = Object.keys(rows[0]);
+        if (keys.length < 2) return;
+
+        const labels = rows.map(r => String(r[keys[0]]));
+        const values = rows.map(r => Number(r[keys[1]]) || 0);
+
+        const COLORS = [
+            "#10b981","#3b82f6","#8b5cf6","#f59e0b","#f43f5e",
+            "#06b6d4","#6366f1","#ec4899","#14b8a6","#a855f7",
+            "#eab308","#ef4444","#22c55e","#0ea5e9","#d946ef"
+        ];
+        const isDark    = document.documentElement.getAttribute("data-theme") === "dark";
+        const gridColor = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)";
+        const textColor = isDark ? "#94a3b8" : "#475569";
+
+        let chartType  = (data.chart_type || "bar").toLowerCase();
+        let isHoriz    = false;
+        if (chartType === "horizontalbar") { chartType = "bar"; isHoriz = true; }
+        if (chartType === "stackedbar")    { chartType = "bar"; }
+        if (chartType === "area")          { chartType = "line"; }
+        const isPie = ["pie","doughnut"].includes(chartType);
+        if (!["bar","line","pie","doughnut","scatter"].includes(chartType)) chartType = "bar";
+
+        const color = COLORS[0];
+        const ds = {
+            label: String(keys[1]).replace(/_/g," ").replace(/\b\w/g, c => c.toUpperCase()),
+            data: values,
+            backgroundColor: isPie
+                ? COLORS.slice(0, values.length).map(c => c + "bb")
+                : color + "33",
+            borderColor: isPie
+                ? COLORS.slice(0, values.length)
+                : color,
+            borderWidth: 2,
+            borderRadius: chartType === "bar" ? 6 : 0,
+            tension: chartType === "line" ? 0.45 : 0,
+        };
+
+        if (chartType === "line") {
+            ds.fill = data.chart_type === "area";
+            ds.pointRadius = rows.length > 30 ? 0 : 4;
+            ds.pointBackgroundColor = color;
+        }
+
+        canvas.parentElement.style.height = "250px";
+
+        new Chart(canvas, {
+            type: chartType,
+            data: { labels, datasets: [ds] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                devicePixelRatio: window.devicePixelRatio || 2,
+                indexAxis: isHoriz ? "y" : "x",
+                plugins: {
+                    legend: {
+                        display: isPie,
+                        labels: { color: textColor, font:{ family:"'Inter',sans-serif", size:11 } },
+                    },
+                    tooltip: {
+                        backgroundColor: isDark ? "rgba(255,255,255,0.92)" : "rgba(15,23,42,0.95)",
+                        titleColor: isDark ? "#0f172a" : "#fff",
+                        bodyColor:  isDark ? "#475569" : "#cbd5e1",
+                        cornerRadius: 8, padding: 9,
+                        callbacks: {
+                            label: ctx => {
+                                const v = isPie ? ctx.parsed : (isHoriz ? ctx.parsed.x : ctx.parsed.y);
+                                return `${ctx.dataset.label}: ${typeof v === "number" ? v.toLocaleString("en-IN") : v}`;
+                            },
+                        },
+                    },
+                },
+                scales: isPie ? {} : {
+                    x: {
+                        grid: { color: isHoriz ? gridColor : "transparent" },
+                        ticks: {
+                            color: textColor,
+                            font: { family:"'Inter'", size:10 },
+                            maxTicksLimit: isHoriz ? 8 : 10,
+                            callback: v => typeof v === "number" && Math.abs(v) >= 1000 ? (v/1000).toFixed(1)+"K" : v,
+                        },
+                        beginAtZero: isHoriz,
+                    },
+                    y: {
+                        grid: { color: isHoriz ? "transparent" : gridColor },
+                        ticks: {
+                            color: textColor,
+                            font: { family:"'Inter'", size:10 },
+                            maxTicksLimit: 8,
+                            callback: v => typeof v === "number" && Math.abs(v) >= 1000 ? (v/1000).toFixed(1)+"K" : v,
+                        },
+                        beginAtZero: !isHoriz,
+                    },
+                },
+                animation: { duration: 600, easing: "easeOutQuart" },
+            },
+        });
+    }
+
+    // ── Modification Confirm Card (mode: "confirm_modify") ─────────────────
+    function appendConfirmModifyMessage(data) {
+        const el = document.createElement("div");
+        el.className = "msg msg-ai";
+
+        const riskLevel = (data.risk_level || "medium").toLowerCase();
+        const riskLabel = riskLevel.charAt(0).toUpperCase() + riskLevel.slice(1) + " Risk";
+        const pendingSql = data.pending_sql || "";
+
+        el.innerHTML = `
+            <div class="ai-avatar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+                </svg>
+            </div>
+            <div class="ai-body">
+                <div class="ai-answer">${escapeHtml(data.intent_summary || "Ready to execute the following modification:")}</div>
+                <div class="confirm-card">
+                    <div class="confirm-card-header">
+                        <div class="confirm-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <div class="confirm-card-title">Data Modification Preview</div>
+                            <div class="confirm-card-subtitle">Review the SQL carefully before approving — this will change your database.</div>
+                        </div>
+                    </div>
+                    <div class="confirm-card-body">
+                        <span class="risk-badge risk-${riskLevel}">${riskLabel}</span>
+                        <div class="confirm-sql-block">
+                            <pre>${escapeHtml(pendingSql)}</pre>
+                        </div>
+                        ${data.rows_affected_estimate && data.rows_affected_estimate !== "unknown" ? `
+                        <div class="confirm-rows-hint">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                            Estimated rows affected: <strong>${escapeHtml(String(data.rows_affected_estimate))}</strong>
+                        </div>` : ""}
+                        <div class="confirm-actions">
+                            <button class="confirm-approve-btn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                                Approve &amp; Execute
+                            </button>
+                            <button class="confirm-cancel-btn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+
+        const approveBtn = el.querySelector(".confirm-approve-btn");
+        const cancelBtn  = el.querySelector(".confirm-cancel-btn");
+
+        approveBtn.addEventListener("click", async () => {
+            approveBtn.disabled = true;
+            cancelBtn.disabled  = true;
+            approveBtn.innerHTML = `<div class="report-btn-spinner"></div> Executing…`;
+
+            try {
+                const res = await fetch("/modify/execute", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sql: pendingSql,
+                        provider: selectedProvider,
+                        conversation_id: currentConvId,
+                    }),
+                });
+                const result = await res.json();
+                if (result.mode === "modify_success") {
+                    appendModifyResultMessage(result.message || "Done!", true);
+                } else {
+                    appendModifyResultMessage(result.error || "Execution failed.", false);
+                }
+            } catch (err) {
+                appendModifyResultMessage("Execution error: " + err.message, false);
+            }
+
+            scrollToBottom();
+        });
+
+        cancelBtn.addEventListener("click", () => {
+            approveBtn.disabled = true;
+            cancelBtn.disabled  = true;
+            appendModifyResultMessage("Modification cancelled. No changes were made.", null);
+            scrollToBottom();
+        });
+
+        chatThread.appendChild(el);
+    }
+
+    // ── Modify Result Message ──────────────────────────────────────────────
+    // success: true → green success, false → red error, null → neutral (cancelled)
+    function appendModifyResultMessage(message, success) {
+        const el = document.createElement("div");
+        el.className = "msg msg-ai";
+
+        const cardClass = success === true  ? "modify-result-card modify-success-card" :
+                          success === false ? "modify-result-card modify-error-card"   :
+                                             "modify-result-card";
+        const icon = success === true  ? "✓" :
+                     success === false ? "✕" : "⊘";
+
+        el.innerHTML = `
+            <div class="ai-avatar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+                </svg>
+            </div>
+            <div class="ai-body">
+                <div class="${cardClass}">
+                    <span class="modify-result-icon">${icon}</span>
+                    <span class="modify-result-text">${escapeHtml(message)}</span>
+                </div>
+            </div>`;
+
+        chatThread.appendChild(el);
+    }
+
+    // ── Plain chat response (mode: "chat") ─────────────────────────────────
     function appendAIMessage(data) {
         const el = document.createElement("div");
         el.className = "msg msg-ai";
@@ -725,6 +772,9 @@
         const hasSql    = !!data.sql;
         const hasAnswer = !!data.answer;
         const rowLabel  = hasData ? `${data.data.length} row${data.data.length !== 1 ? "s" : ""}` : "0 rows";
+        const sqlId     = "sql_" + Date.now();
+        const tblId     = "tbl_" + Date.now();
+        const insId     = "ins_" + Date.now();
 
         el.innerHTML = `
             <div class="ai-avatar">
@@ -737,58 +787,53 @@
                 ${hasAnswer ? `<div class="ai-answer">${escapeHtml(data.answer)}</div>` : ""}
                 ${hasSql ? `
                 <div class="ai-section">
-                    <button class="section-toggle" data-target="sql-${Date.now()}">
+                    <button class="section-toggle" data-target="${sqlId}">
                         <span class="section-toggle-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                         </span>
                         SQL Query
                         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
-                    <div class="section-body" id="sql-${Date.now()}">
+                    <div class="section-body" id="${sqlId}">
                         <pre class="sql-code"><code>${escapeHtml(data.sql)}</code></pre>
                     </div>
                 </div>` : ""}
                 ${hasData ? `
                 <div class="ai-section">
-                    <button class="section-toggle" data-target="tbl-${Date.now()}">
+                    <button class="section-toggle" data-target="${tblId}">
                         <span class="section-toggle-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                         </span>
                         Results <span class="row-badge">${rowLabel}</span>
                         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
-                    <div class="section-body" id="tbl-${Date.now()}">
+                    <div class="section-body" id="${tblId}">
                         <div class="table-wrapper">${buildTable(data.data)}</div>
                     </div>
                 </div>` : ""}
                 ${data.insights ? `
                 <div class="ai-section">
-                    <button class="section-toggle" data-target="ins-${Date.now()}">
+                    <button class="section-toggle" data-target="${insId}">
                         <span class="section-toggle-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 01-1 1H9a1 1 0 01-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>
                         </span>
                         Insights
                         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
-                    <div class="section-body" id="ins-${Date.now()}">
+                    <div class="section-body collapsed" id="${insId}">
                         <div class="insights-text">${escapeHtml(data.insights)}</div>
                     </div>
                 </div>` : ""}
             </div>`;
 
-        // Wire up section toggles
-        // SQL and Results are open by default; Insights is collapsed
+        // SQL and Table open by default; Insights collapsed
         el.querySelectorAll(".section-toggle").forEach(btn => {
             const targetId = btn.dataset.target;
             const body = el.querySelector(`#${targetId}`);
             if (!body) return;
 
-            const isInsights = targetId.startsWith("ins-");
-            if (isInsights) {
-                body.classList.add("collapsed");
-            } else {
-                btn.classList.add("open"); // chevron rotated = open
-            }
+            const isInsights = targetId.startsWith("ins_");
+            if (!isInsights) btn.classList.add("open");
 
             btn.addEventListener("click", () => {
                 body.classList.toggle("collapsed");
@@ -830,6 +875,31 @@
         chatThread.appendChild(el);
     }
 
+    function appendUserMessage(text) {
+        const el = document.createElement("div");
+        el.className = "msg msg-user";
+        el.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
+        chatThread.appendChild(el);
+    }
+
+    function appendTypingIndicator() {
+        const el = document.createElement("div");
+        el.className = "msg msg-ai";
+        el.innerHTML = `
+            <div class="ai-avatar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+                </svg>
+            </div>
+            <div class="typing-indicator">
+                <span></span><span></span><span></span>
+            </div>`;
+        chatThread.appendChild(el);
+        return el;
+    }
+
+    // Restore a historical turn in the chat thread (used by loadConversation)
     function appendTurn(question, answer, sql, queryResult) {
         appendUserMessage(question);
         appendAIMessage({
@@ -867,7 +937,6 @@
     function showWelcome()  { welcomeState.classList.remove("hidden"); }
     function hideWelcome()  { welcomeState.classList.add("hidden"); }
     function clearChatThread() {
-        // Remove all msg elements, keep welcome state
         chatThread.querySelectorAll(".msg").forEach(e => e.remove());
     }
     function scrollToBottom() {
@@ -887,29 +956,53 @@
         d.appendChild(document.createTextNode(String(str)));
         return d.innerHTML;
     }
+    function escapeAttr(str) {
+        return String(str).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
 
-    // ── Startup: load current conversation ────────────────────────────────
+    // ── Explanation Modal (for report.html eye buttons — kept for compat) ──
+    window.showExplanationModal = function(title, explanation) {
+        const overlay = document.getElementById("explainModalOverlay");
+        const mTitle  = document.getElementById("explainModalTitle");
+        const mBody   = document.getElementById("explainModalBody");
+        if (!overlay || !mTitle || !mBody) return;
+        mTitle.textContent = title;
+        let html = "";
+        if (explanation.what) {
+            html += `<div class="explain-section"><div class="explain-section-label explain-label-what">What</div><div class="explain-section-text">${escapeHtml(explanation.what)}</div></div>`;
+        }
+        if (explanation.how) {
+            html += `<div class="explain-section"><div class="explain-section-label explain-label-how">How</div><div class="explain-section-text">${escapeHtml(explanation.how)}</div></div>`;
+        }
+        mBody.innerHTML = html || "<p>No explanation available.</p>";
+        overlay.classList.remove("hidden");
+    };
+
+    const explainClose   = document.getElementById("explainModalClose");
+    const explainOverlay = document.getElementById("explainModalOverlay");
+    if (explainClose)   explainClose.addEventListener("click", () => explainOverlay.classList.add("hidden"));
+    if (explainOverlay) explainOverlay.addEventListener("click", e => { if (e.target === explainOverlay) explainOverlay.classList.add("hidden"); });
+
+    const thoughtClose   = document.getElementById("thoughtModalClose");
+    const thoughtOverlay = document.getElementById("thoughtModalOverlay");
+    if (thoughtClose)   thoughtClose.addEventListener("click", () => thoughtOverlay.classList.add("hidden"));
+    if (thoughtOverlay) thoughtOverlay.addEventListener("click", e => { if (e.target === thoughtOverlay) thoughtOverlay.classList.add("hidden"); });
+
+    // ── Startup ────────────────────────────────────────────────────────────
     (async function init() {
         renderSidebarList();
-        const convs = getConversations();
-        const existing = convs.find(c => c.id === currentConvId);
 
-        if (existing) {
-            topbarTitle.textContent = existing.title || "Chat";
-            try {
-                const res = await fetch(`/history?conversation_id=${encodeURIComponent(currentConvId)}`);
-                if (res.ok) {
-                    const turns = await res.json();
-                    if (turns.length > 0) {
-                        hideWelcome();
-                        turns.forEach(t => appendTurn(t.question, t.answer, t.sql_query, t.query_result));
-                        scrollToBottom();
-                    }
-                }
-            } catch (_) {}
-        } else {
-            showWelcome();
+        // Try to restore last active conversation
+        const savedId = localStorage.getItem(_CONV_STORAGE_KEY);
+        if (savedId) {
+            const convList = getAllConversations();
+            const conv = convList.find(c => c.id === savedId);
+            if (conv) {
+                await loadConversation(savedId, conv.title);
+                return;
+            }
         }
+        showWelcome();
     })();
 
 })();
