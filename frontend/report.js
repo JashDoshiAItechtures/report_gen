@@ -254,11 +254,33 @@
             }
 
             charts.forEach((chart, idx) => {
-                const hasExplanation = chart.explanation && (chart.explanation.what || chart.explanation.how);
                 const isWide = shouldBeWide[idx];
                 const chartTypeBadge = (chart.type || "bar").replace("horizontalBar","H.BAR").replace("stackedBar","STACKED").replace("doughnut","DONUT").toUpperCase();
                 const chartInsight = chart.chart_insight || (chart.explanation && chart.explanation.insight) || "";
-                html += `<div class="chart-card${isWide ? " chart-full-width" : ""}">\n                    <div class="chart-header">\n                        <span class="chart-title">${escapeHtml(chart.title || "Chart " + (idx + 1))}</span>\n                        <div style="display:flex;align-items:center;gap:0.4rem">\n                            <span class="chart-type-badge">${chartTypeBadge}</span>\n                            ${hasExplanation ? `<button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(chart.explanation))}' data-title="${escapeAttr(chart.title || "Chart")}">\n                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>\n                            </button>` : ""}\n                        </div>\n                    </div>\n                    <div class="chart-body">\n                        <canvas id="chart_${idx}"></canvas>\n                    </div>\n                    ${chartInsight ? `<div class="chart-insight-text">💡 ${escapeHtml(chartInsight)}</div>` : ""}\n                </div>`;
+
+                // Build a guaranteed explanation object
+                const expl = {
+                    what:    (chart.explanation && chart.explanation.what)    || chart.title || "",
+                    how:     (chart.explanation && chart.explanation.how)     || `${chartTypeBadge} chart — data grouped and aggregated from the database.`,
+                    insight: (chart.explanation && chart.explanation.insight) || chart.chart_insight || "",
+                    type:    chart.type || "bar",
+                };
+
+                html += `<div class="chart-card${isWide ? " chart-full-width" : ""}">
+                    <div class="chart-header">
+                        <span class="chart-title">${escapeHtml(chart.title || "Chart " + (idx + 1))}</span>
+                        <div style="display:flex;align-items:center;gap:0.4rem">
+                            <span class="chart-type-badge">${chartTypeBadge}</span>
+                            <button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(expl))}' data-title="${escapeAttr(chart.title || "Chart")}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chart_${idx}"></canvas>
+                    </div>
+                    ${chartInsight ? `<div class="chart-insight-text">💡 ${escapeHtml(chartInsight)}</div>` : ""}
+                </div>`;
             });
 
             html += `</div>`;
@@ -288,15 +310,23 @@
         // ── Insights — Rich Cards ─────────────────────────────────────────
         const insights = report.insights || [];
         if (insights.length > 0) {
+            const insightIcons = {
+                positive:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>`,
+                negative:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>`,
+                warning:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+                opportunity: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+                neutral:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
+            };
             html += `<div class="report-section-label label-insights stream-section">
                 <div class="report-section-label-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 01-1 1H9a1 1 0 01-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>
                 </div>
                 <span class="report-section-label-text">AI-Generated Insights</span>
+                <span style="font-size:0.6rem;font-weight:700;color:var(--accent-indigo);background:rgba(99,102,241,0.1);padding:0.14rem 0.45rem;border-radius:10px;margin-left:auto">${insights.length} insights</span>
             </div>
             <div class="report-insights stream-section">`;
 
-            insights.forEach(ins => {
+            insights.forEach((ins, idx) => {
                 // Support both string and object insights
                 if (typeof ins === "string") {
                     html += `<div class="insight-card type-neutral">
@@ -304,9 +334,16 @@
                     </div>`;
                 } else {
                     const type = ins.type || "neutral";
+                    const icon = insightIcons[type] || insightIcons.neutral;
                     html += `<div class="insight-card type-${type}">
-                        <div class="insight-type-badge badge-${type}">${type}</div>
-                        ${ins.title ? `<div class="insight-title">${escapeHtml(ins.title)}</div>` : ""}
+                        <div class="insight-card-header">
+                            <div class="insight-icon-wrap type-icon-${type}">${icon}</div>
+                            <div style="flex:1;min-width:0">
+                                <div class="insight-type-badge badge-${type}">${type}</div>
+                                ${ins.title ? `<div class="insight-title">${escapeHtml(ins.title)}</div>` : ""}
+                            </div>
+                            <div class="insight-num">${String(idx + 1).padStart(2, "0")}</div>
+                        </div>
                         <div class="insight-body">${escapeHtml(ins.body || ins.title || "")}</div>
                     </div>`;
                 }
@@ -861,14 +898,56 @@
 
     function showExplanationModal(title, explanation) {
         explainTitle.textContent = title;
-        // Build a flowing paragraph from all explanation fields
-        const parts = [];
-        if (explanation.what) parts.push(explanation.what);
-        if (explanation.how) parts.push(explanation.how);
-        if (explanation.why) parts.push(explanation.why);
-        if (explanation.insight) parts.push(explanation.insight);
-        const fullText = parts.join(". ").replace(/\.\.\s*/g, ". ").replace(/\s+/g, " ").trim();
-        explainBody.innerHTML = `<div style="font-size:0.82rem;line-height:1.75;color:var(--text-secondary);padding:0.25rem 0">${escapeHtml(fullText)}</div>`;
+
+        const icons = {
+            what:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+            how:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+            insight: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 01-1 1H9a1 1 0 01-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>`,
+            type:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`,
+        };
+
+        const sections = [
+            { key: "what",    label: "What it shows",  color: "#3b82f6" },
+            { key: "how",     label: "How it's built", color: "#8b5cf6" },
+            { key: "insight", label: "Key insight",    color: "#10b981" },
+            { key: "type",    label: "Chart type",     color: "#f59e0b" },
+        ];
+
+        let bodyHtml = `<div style="display:flex;flex-direction:column;gap:1rem;padding:0.15rem 0">`;
+        let hasContent = false;
+
+        sections.forEach(sec => {
+            const val = explanation[sec.key];
+            if (!val) return;
+            hasContent = true;
+            bodyHtml += `
+                <div style="display:flex;gap:0.8rem;align-items:flex-start">
+                    <div style="flex-shrink:0;width:30px;height:30px;border-radius:8px;
+                                background:${sec.color}18;color:${sec.color};
+                                display:flex;align-items:center;justify-content:center;margin-top:2px">
+                        ${icons[sec.key] || ""}
+                    </div>
+                    <div style="flex:1;min-width:0">
+                        <div style="font-size:0.57rem;font-weight:800;text-transform:uppercase;
+                                    letter-spacing:0.07em;color:${sec.color};margin-bottom:0.2rem">
+                            ${sec.label}
+                        </div>
+                        <div style="font-size:0.815rem;line-height:1.7;color:var(--text-secondary)">
+                            ${escapeHtml(val)}
+                        </div>
+                    </div>
+                </div>`;
+        });
+
+        if (!hasContent) {
+            // Plain fallback for bare string explanations
+            const parts = [explanation.what, explanation.how, explanation.insight]
+                .filter(Boolean).join(". ").replace(/\.\. */g, ". ").trim();
+            bodyHtml += `<div style="font-size:0.82rem;line-height:1.75;color:var(--text-secondary)">${escapeHtml(parts || "No details available.")}</div>`;
+        }
+
+        bodyHtml += `</div>`;
+        explainBody.innerHTML = bodyHtml;
         explainOverlay.classList.remove("hidden");
     }
 

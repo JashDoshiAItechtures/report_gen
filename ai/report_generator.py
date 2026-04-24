@@ -911,7 +911,120 @@ class ReportPipeline:
             return chart
 
         chart["data"] = result["data"]
+
+        # ── Rebuild chart_insight if it looks hallucinated ─────────────
+        self._rebuild_chart_insight(chart)
+
         return chart
+
+    @staticmethod
+    def _is_hallucinated_insight(text: str) -> bool:
+        """Return True if the chart_insight contains known hallucination patterns."""
+        if not text:
+            return True
+        hallmarks = [
+            "1234567", "1,234,567", "12345678",      # placeholder numbers
+            "123456", "999999",                        # other placeholder rounds
+            "Customer A", "Customer B", "Product A",  # placeholder names
+            "being 1234", "value being",               # LLM phrasing pattern
+        ]
+        txt = text.lower()
+        return any(h.lower() in txt for h in hallmarks)
+
+    @staticmethod
+    def _fmt_crore(val) -> str:
+        """Format a raw INR value into Cr / L notation."""
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return str(val)
+        if v >= 1e7:
+            return f"₹{v/1e7:.2f} Cr"
+        if v >= 1e5:
+            return f"₹{v/1e5:.2f} L"
+        return f"₹{v:,.0f}"
+
+    def _rebuild_chart_insight(self, chart: dict) -> None:
+        """Compute a factual chart_insight from real data rows.
+
+        Only fires when the LLM's insight looks hallucinated (contains
+        placeholder numbers like 1234567.89).
+        """
+        existing = chart.get("chart_insight", "") or ""
+        if not self._is_hallucinated_insight(existing):
+            return   # LLM provided a real insight — keep it
+
+        data = chart.get("data") or []
+        if not data:
+            chart["chart_insight"] = "No data available for this chart."
+            return
+
+        rows = data
+        title = chart.get("title", "")
+        chart_type = chart.get("type", "bar")
+
+        # Get column names of the first row
+        first_row = dict(rows[0])
+        cols = list(first_row.keys())
+        if len(cols) < 2:
+            return  # can't build insight without label + value
+
+        label_col = cols[0]
+        value_col = cols[1]
+
+        def _fmt(v):
+            try:
+                fv = float(v)
+                if fv > 1e5:
+                    return self._fmt_crore(fv)
+                if fv == int(fv):
+                    return f"{int(fv):,}"
+                return f"{fv:,.2f}"
+            except (TypeError, ValueError):
+                return str(v)
+
+        # Time-series: report trend direction
+        if chart_type in ("line", "area") and len(rows) >= 2:
+            first_val = float(rows[0].get(value_col, 0) or 0)
+            last_val  = float(rows[-1].get(value_col, 0) or 0)
+            direction = "increasing" if last_val > first_val else "decreasing"
+            first_lbl = rows[0].get(label_col, "")
+            last_lbl  = rows[-1].get(label_col, "")
+            chart["chart_insight"] = (
+                f"{title} shows a {direction} trend from "
+                f"{_fmt(first_val)} ({first_lbl}) to {_fmt(last_val)} ({last_lbl})."
+            )
+            return
+
+        # Ranking / bar / horizontalBar / doughnut: top-N summary
+        top = dict(rows[0])
+        top_label = top.get(label_col, "")
+        top_value = top.get(value_col, 0)
+        n = len(rows)
+
+        if n == 1:
+            chart["chart_insight"] = (
+                f"{top_label} accounts for the full value at {_fmt(top_value)}."
+            )
+        elif n == 2:
+            bot = dict(rows[1])
+            bot_label = bot.get(label_col, "")
+            bot_value = bot.get(value_col, 0)
+            chart["chart_insight"] = (
+                f"{top_label}: {_fmt(top_value)}. "
+                f"{bot_label}: {_fmt(bot_value)}."
+            )
+        else:
+            # Show top-2 and total
+            second = dict(rows[1])
+            second_label = second.get(label_col, "")
+            second_value = second.get(value_col, 0)
+            chart["chart_insight"] = (
+                f"Top: {top_label} ({_fmt(top_value)}), "
+                f"followed by {second_label} ({_fmt(second_value)}) "
+                f"across {n} items."
+            )
+
 
     def _execute_table_sql(self, table: dict) -> dict:
         """Execute the detail table's SQL and populate data."""
@@ -931,16 +1044,101 @@ class ReportPipeline:
         table["data"] = result["data"][:200]  # Limit rows for display
         return table
 
+    # ── Parallel async orchestrator ────────────────────────────────────────
+
+    async def _generate_parallel(self, blueprint: dict, question: str) -> dict:
+        """Fire all 5 agents simultaneously and merge their outputs.
+
+        Each agent is an independent async coroutine backed by a thread-pool
+        executor so that blocking psycopg2 DB calls don't stall the event loop.
+
+        Returns the merged partial report dict ready for post-processing.
+        """
+        import asyncio
+        import time
+        from ai.agents.kpi_agent import KpiAgent
+        from ai.agents.chart_agent import ChartAgent
+        from ai.agents.insight_agent import InsightAgent
+        from ai.agents.sql_agent import SqlAgent
+        from ai.agents.validation_agent import ValidationAgent
+
+        t0 = time.perf_counter()
+        logger.info(
+            "Parallel pipeline — launching 5 agents simultaneously "
+            "(%d KPIs, %d charts)",
+            len(blueprint.get("kpis", [])),
+            len(blueprint.get("charts", [])),
+        )
+
+        kpi_agent        = KpiAgent(self)
+        chart_agent      = ChartAgent(self)
+        insight_agent    = InsightAgent()
+        sql_agent        = SqlAgent(self)
+        validation_agent = ValidationAgent()
+
+        # ── Fire all 5 agents in parallel ─────────────────────────────────
+        (
+            kpi_result,
+            chart_result,
+            insight_result,
+            sql_result,
+            validation_result,
+        ) = await asyncio.gather(
+            kpi_agent.run(blueprint, question),
+            chart_agent.run(blueprint, question),
+            insight_agent.run(blueprint, question),
+            sql_agent.run(blueprint, question),
+            validation_agent.run(blueprint, question),
+            return_exceptions=False,
+        )
+
+        elapsed = time.perf_counter() - t0
+        logger.info("Parallel pipeline — all agents finished in %.3fs total", elapsed)
+
+        # ── Merge agent outputs into the report dict ───────────────────────
+        merged = dict(blueprint)   # start from blueprint (preserves title, topic, etc.)
+
+        merged["kpis"]     = kpi_result.get("kpis", [])
+        merged["charts"]   = chart_result.get("charts", [])
+        merged["insights"] = insight_result.get("insights", [])
+        if "table" in sql_result:
+            merged["table"] = sql_result["table"]
+
+        # ── Collect per-agent timings for observability ────────────────────
+        agent_timings: dict = {}
+        for r in (kpi_result, chart_result, insight_result, sql_result, validation_result):
+            agent_timings.update(r.get("agent_timing", {}))
+        agent_timings["total_parallel"] = round(elapsed, 3)
+
+        # ── Validation cross-check (runs after merge so KPI values exist) ──
+        controls = validation_result.get("_validation_controls", {})
+        if controls:
+            validation_summary = ValidationAgent.cross_check(merged["kpis"], controls)
+            merged["validation"] = validation_summary
+            flagged = sum(1 for c in validation_summary["checks"] if c["flagged"])
+            if flagged:
+                logger.warning(
+                    "Validation: %d KPI(s) deviate >20%% from DB control values", flagged
+                )
+            else:
+                logger.info("Validation: all KPIs match DB control values ✓")
+
+        return merged, agent_timings
+
     def generate(self, question: str) -> dict[str, Any]:
-        """Generate a complete report with real data."""
+        """Generate a complete report with real data (parallel multi-agent pipeline)."""
+        import asyncio
+        import time
+
         schema_str = format_schema()
         rels_str = format_relationships()
         profile_str = get_data_profile()
         question_with_date = self._build_question_with_context(question)
 
         logger.info("Report generation — calling LLM for report blueprint")
+        t_start = time.perf_counter()
 
-        # Call LLM to generate report blueprint
+        # ── Step 1: LLM blueprint call (synchronous — unavoidable) ────────
         result = self.report_gen(
             question=question_with_date,
             schema_info=schema_str,
@@ -948,9 +1146,12 @@ class ReportPipeline:
             data_profile=profile_str,
         )
 
+        t_llm = time.perf_counter()
+        logger.info("Report blueprint received in %.2fs — launching parallel agents", t_llm - t_start)
+
         # Parse the JSON output
         try:
-            report = self._extract_json(result.report_json)
+            blueprint = self._extract_json(result.report_json)
         except (json.JSONDecodeError, ValueError) as exc:
             logger.error("Failed to parse report JSON: %s", exc)
             return {
@@ -959,130 +1160,66 @@ class ReportPipeline:
                 "report": None,
             }
 
-        logger.info("Report blueprint received — executing SQL queries")
-
-        # Execute all KPI SQLs
-        for kpi in report.get("kpis", []):
-            self._execute_kpi_sql(kpi)
-
-        # Execute all chart SQLs
-        for chart in report.get("charts", []):
-            self._execute_chart_sql(chart)
-
-        # Execute table SQL
-        if "table" in report and report["table"]:
-            self._execute_table_sql(report["table"])
-
-        # ── Post-processing: remove failed KPIs and empty charts ──────
-        # Remove KPIs that returned N/A or had errors
-        if "kpis" in report:
-            valid_kpis = [
-                kpi for kpi in report["kpis"]
-                if kpi.get("value") not in (None, "N/A", "")
-                and not kpi.get("error")
-            ]
-            if valid_kpis:
-                report["kpis"] = valid_kpis
-                logger.info("KPIs after cleanup: %d of %d valid",
-                            len(valid_kpis), len(report.get("kpis", [])))
-
-        # Remove charts with empty data, errors, single-column data, or all-zero values
-        if "charts" in report:
-            valid_charts = []
-            for chart in report["charts"]:
-                if chart.get("error"):
-                    logger.info("Removing chart '%s' — has error: %s", chart.get("title", "?"), chart.get("error"))
-                    continue
-                if not chart.get("data") or len(chart["data"]) == 0:
-                    logger.info("Removing chart '%s' — empty data", chart.get("title", "?"))
-                    continue
-                # Check column count — need at least label + value
-                row_keys = list(chart["data"][0].keys()) if chart["data"] else []
-                if len(row_keys) < 2:
-                    logger.info("Removing chart '%s' — only %d columns (need 2+)", chart.get("title", "?"), len(row_keys))
-                    continue
-                # Check if all numeric values are zero
-                value_keys = row_keys[1:]
-                all_zero = all(
-                    all((v := row.get(k)) is None or v == 0 or v == "" for k in value_keys)
-                    for row in chart["data"]
+        # ── Step 2: Parallel agent execution ──────────────────────────────
+        # Run the async orchestrator.  We use asyncio.run() when there is no
+        # running event loop (sync context from uvicorn sync worker), or we
+        # get the current loop if one already exists (asyncio endpoint).
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're inside an async context — run in thread pool to avoid
+                # nested-loop error (e.g. called from async FastAPI endpoint)
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        self._generate_parallel(blueprint, question),
+                    )
+                    report, agent_timings = future.result()
+            else:
+                report, agent_timings = loop.run_until_complete(
+                    self._generate_parallel(blueprint, question)
                 )
-                if all_zero:
-                    logger.info("Removing chart '%s' — all values are zero/null", chart.get("title", "?"))
-                    continue
-                valid_charts.append(chart)
+        except RuntimeError:
+            # Fallback: create a brand-new event loop
+            report, agent_timings = asyncio.run(
+                self._generate_parallel(blueprint, question)
+            )
 
-            if valid_charts:
-                report["charts"] = valid_charts
-            logger.info("Charts after cleanup: %d of %d valid",
-                        len(valid_charts), len(report.get("charts", [])))
-
-            # ── Fallback chart filling — guarantee ≥5 charts always ───────
-            # When LLM SQL fails, fill remaining slots from pre-verified templates.
-            if len(valid_charts) < 5:
-                from ai.report_fallback_charts import detect_report_topic, get_fallback_charts
-                topic = detect_report_topic(question)
-                logger.info(
-                    "Only %d LLM charts passed — filling from fallback library (topic: %s)",
-                    len(valid_charts), topic,
-                )
-                fallbacks = get_fallback_charts(topic)
-
-                # Track which fallback IDs are already represented (avoid duplicates)
-                existing_ids = {c.get("id", "") for c in valid_charts}
-
-                for fb_chart in fallbacks:
-                    if len(valid_charts) >= 6:
-                        break
-                    if fb_chart["id"] in existing_ids:
-                        continue
-                    fb_copy = dict(fb_chart)   # shallow copy — don't mutate the template
-                    executed = self._execute_chart_sql(fb_copy)
-                    if (
-                        executed.get("data")
-                        and len(executed["data"]) >= 2
-                        and not executed.get("error")
-                    ):
-                        # Apply smart type fix to fallback charts too
-                        self._smart_fix_chart_type(executed)
-                        valid_charts.append(executed)
-                        existing_ids.add(fb_chart["id"])
-                        logger.info(
-                            "Fallback chart added: '%s' (%d rows)",
-                            fb_chart["title"], len(executed["data"]),
-                        )
-
-                report["charts"] = valid_charts
-                logger.info("Charts after fallback fill: %d total", len(valid_charts))
-
-        # ── Smart chart-type auto-correction based on actual data ──────
-        # Only fixes data-shape issues (e.g. daily→monthly aggregation,
-        # pie with too many slices). Does NOT override the AI's type choice.
-        if "charts" in report:
-            for chart in report["charts"]:
-                self._smart_fix_chart_type(chart)
-
+        # ── Step 3: Log final counts ──────────────────────────────────────
+        final_kpi_count   = len(report.get("kpis", []))
         final_chart_count = len(report.get("charts", []))
-        final_kpi_count = len(report.get("kpis", []))
         logger.info(
             "Report generation complete — %d KPIs, %d charts survived SQL execution",
             final_kpi_count, final_chart_count,
         )
+        logger.info("Agent timings: %s", agent_timings)
+
         if final_chart_count < 5:
             logger.warning(
-                "Only %d charts available after cleanup (expected ≥5). "
-                "Some of the AI's SQL queries likely failed or returned empty data. "
-                "Check earlier log lines for 'Removing chart' entries to see which ones failed.",
+                "Only %d charts available after cleanup (expected ≥5).",
                 final_chart_count,
             )
 
-        # ── Detect applicable filters based on SQL content ────────────
+        # ── Step 4: Rebuild DB-verified summary ───────────────────────────
+        try:
+            from ai.report_fallback_charts import detect_report_topic as _detect_topic
+            report["summary"] = self._build_db_verified_summary(
+                question=question,
+                topic=report.get("topic") or _detect_topic(question),
+                kpis=report.get("kpis", []),
+            )
+        except Exception as _sum_err:
+            logger.warning("Summary rebuild failed, keeping LLM summary: %s", _sum_err)
+
+        # ── Step 5: Detect applicable filters ─────────────────────────────
         applicable_filters = self._detect_applicable_filters(report)
 
         return {
             "mode": "report",
             "report": report,
             "applicable_filters": applicable_filters,
+            "agent_timings": agent_timings,
             "ui_instructions": {
                 "create_new_section": True,
                 "open_in_new_tab": True,
@@ -1099,6 +1236,217 @@ class ReportPipeline:
                 },
             },
         }
+
+    # ── LEGACY sequential helpers (kept for apply_filters / modify paths) ─────
+    # These are still used by apply_filters() and modify() which are per-filter
+    # re-executions, not full report generations.
+
+    def _legacy_execute_kpis_sequential(self, report: dict) -> None:
+        """Sequential KPI execution — only used by apply_filters / modify."""
+        for kpi in report.get("kpis", []):
+            self._execute_kpi_sql(kpi)
+
+    def _legacy_execute_charts_sequential(self, report: dict) -> None:
+        """Sequential chart execution — only used by apply_filters / modify."""
+        for chart in report.get("charts", []):
+            self._execute_chart_sql(chart)
+
+    def _build_db_verified_summary(
+        self, question: str, topic: str, kpis: list[dict]
+    ) -> str:
+        """Build an executive summary using real database values.
+
+        Runs a small set of verified SQL queries for the detected topic,
+        then formats them into a concise, accurate summary sentence.
+        Replaces the LLM's hallucinated summary.
+        """
+        from db.executor import execute_sql
+
+        def _q(sql: str):
+            """Run SQL and return the first value of the first row, or None."""
+            try:
+                res = execute_sql(sql)
+                if res.get("success") and res.get("data"):
+                    return list(res["data"][0].values())[0]
+            except Exception:
+                pass
+            return None
+
+        def _fmt_currency(val) -> str:
+            if val is None:
+                return "N/A"
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                return str(val)
+            if v >= 1e7:
+                return f"₹{v/1e7:.2f} Cr"
+            if v >= 1e5:
+                return f"₹{v/1e5:.2f} L"
+            return f"₹{v:,.0f}"
+
+        def _fmt_num(val) -> str:
+            if val is None:
+                return "N/A"
+            try:
+                return f"{int(float(val)):,}"
+            except (TypeError, ValueError):
+                return str(val)
+
+        def _top3_names(sql: str) -> str:
+            """Run a query returning a name column, return 'A, B, and C'."""
+            try:
+                res = execute_sql(sql)
+                if res.get("success") and res.get("data"):
+                    names = [list(row.values())[0] for row in res["data"][:3]]
+                    if len(names) == 1:
+                        return names[0]
+                    if len(names) == 2:
+                        return f"{names[0]} and {names[1]}"
+                    return f"{names[0]}, {names[1]}, and {names[2]}"
+            except Exception:
+                pass
+            return None
+
+        # ── SALES / AOV / FULFILMENT / DEFAULT ────────────────────────
+        if topic in ("sales", "aov", "fulfilment", "units", "pricing", "default"):
+            total_rev = _q(
+                "SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='closed'"
+            )
+            total_orders = _q(
+                "SELECT COUNT(*) FROM sales_order WHERE status='closed'"
+            )
+            aov = _q(
+                "SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'"
+            )
+            top_custs = _top3_names(
+                "SELECT cm.customer_name FROM sales_order so "
+                "JOIN customer_master cm ON so.customer_id=cm.customer_id "
+                "WHERE so.status='closed' GROUP BY cm.customer_name "
+                "ORDER BY SUM(so.total_amount) DESC LIMIT 3"
+            )
+            top_cat = _q(
+                "SELECT pm.category FROM sales_order so "
+                "JOIN sales_order_line sol ON so.so_id=sol.so_id "
+                "JOIN sales_order_line_pricing solp ON sol.sol_id=solp.sol_id "
+                "JOIN product_master pm ON sol.product_id=pm.product_id "
+                "WHERE so.status='closed' GROUP BY pm.category "
+                "ORDER BY SUM(solp.line_total) DESC LIMIT 1"
+            )
+            fulfil = _q(
+                "SELECT ROUND(100.0*COUNT(*) FILTER(WHERE status='closed')"
+                "/NULLIF(COUNT(*),0),1) FROM sales_order"
+            )
+
+            parts = []
+            if total_rev and total_orders:
+                parts.append(
+                    f"Total revenue from {_fmt_num(total_orders)} closed orders "
+                    f"stands at {_fmt_currency(total_rev)}."
+                )
+            if aov:
+                parts.append(f"Average order value is {_fmt_currency(aov)}.")
+            if top_custs:
+                parts.append(
+                    f"Top customers by revenue are {top_custs}."
+                )
+            if top_cat:
+                parts.append(
+                    f"The '{top_cat}' category leads product revenue."
+                )
+            if fulfil:
+                parts.append(f"Order fulfilment rate is {fulfil}%.")
+            return " ".join(parts) if parts else question
+
+        # ── CUSTOMER ──────────────────────────────────────────────────
+        if topic == "customer":
+            total_custs = _q("SELECT COUNT(*) FROM customer_master")
+            active_custs = _q(
+                "SELECT COUNT(DISTINCT customer_id) FROM sales_order WHERE status='closed'"
+            )
+            avg_rev = _q(
+                "SELECT ROUND(SUM(total_amount)::numeric/NULLIF(COUNT(DISTINCT customer_id),0),2) "
+                "FROM sales_order WHERE status='closed'"
+            )
+            top_custs = _top3_names(
+                "SELECT cm.customer_name FROM sales_order so "
+                "JOIN customer_master cm ON so.customer_id=cm.customer_id "
+                "WHERE so.status='closed' GROUP BY cm.customer_name "
+                "ORDER BY SUM(so.total_amount) DESC LIMIT 3"
+            )
+            parts = []
+            if total_custs and active_custs:
+                parts.append(
+                    f"Out of {_fmt_num(total_custs)} registered customers, "
+                    f"{_fmt_num(active_custs)} are active with closed orders."
+                )
+            if avg_rev:
+                parts.append(f"Average revenue per customer is {_fmt_currency(avg_rev)}.")
+            if top_custs:
+                parts.append(f"Top customers by revenue are {top_custs}.")
+            return " ".join(parts) if parts else question
+
+        # ── PRODUCT ───────────────────────────────────────────────────
+        if topic in ("product", "inventory"):
+            total_prods = _q("SELECT COUNT(*) FROM product_master")
+            total_cats = _q("SELECT COUNT(DISTINCT category) FROM product_master")
+            top_prods = _top3_names(
+                "SELECT pm.product_name FROM sales_order so "
+                "JOIN sales_order_line sol ON so.so_id=sol.so_id "
+                "JOIN sales_order_line_pricing solp ON sol.sol_id=solp.sol_id "
+                "JOIN product_master pm ON sol.product_id=pm.product_id "
+                "WHERE so.status='closed' GROUP BY pm.product_name "
+                "ORDER BY SUM(solp.line_total) DESC LIMIT 3"
+            )
+            top_cat_rev = _q(
+                "SELECT pm.category FROM sales_order so "
+                "JOIN sales_order_line sol ON so.so_id=sol.so_id "
+                "JOIN sales_order_line_pricing solp ON sol.sol_id=solp.sol_id "
+                "JOIN product_master pm ON sol.product_id=pm.product_id "
+                "WHERE so.status='closed' GROUP BY pm.category "
+                "ORDER BY SUM(solp.line_total) DESC LIMIT 1"
+            )
+            parts = []
+            if total_prods and total_cats:
+                parts.append(
+                    f"The product catalogue contains {_fmt_num(total_prods)} products "
+                    f"across {_fmt_num(total_cats)} categories."
+                )
+            if top_cat_rev:
+                parts.append(f"'{top_cat_rev}' is the highest-revenue category.")
+            if top_prods:
+                parts.append(f"Top products by revenue are {top_prods}.")
+            return " ".join(parts) if parts else question
+
+        # ── VENDOR / PROCUREMENT / GOLD / DIAMOND ─────────────────────
+        if topic in ("vendor", "procurement", "gold", "diamond"):
+            total_vendors = _q("SELECT COUNT(*) FROM vendor_master")
+            total_pos = _q("SELECT COUNT(*) FROM purchase_order")
+            total_po_val = _q(
+                "SELECT ROUND(SUM(total_amount)::numeric,2) FROM purchase_order"
+            )
+            top_vendors = _top3_names(
+                "SELECT vm.vendor_name FROM purchase_order po "
+                "JOIN vendor_master vm ON po.vendor_id=vm.vendor_id "
+                "GROUP BY vm.vendor_name ORDER BY SUM(po.total_amount) DESC LIMIT 3"
+            )
+            open_val = _q(
+                "SELECT ROUND(SUM(total_amount)::numeric,2) FROM purchase_order WHERE status='open'"
+            )
+            parts = []
+            if total_vendors and total_pos and total_po_val:
+                parts.append(
+                    f"Procurement spans {_fmt_num(total_vendors)} vendors across "
+                    f"{_fmt_num(total_pos)} purchase orders totalling {_fmt_currency(total_po_val)}."
+                )
+            if open_val:
+                parts.append(f"{_fmt_currency(open_val)} is pending in open POs.")
+            if top_vendors:
+                parts.append(f"Top vendors by PO value are {top_vendors}.")
+            return " ".join(parts) if parts else question
+
+        # Fallback — return the question itself as a minimal summary
+        return question
 
     def _smart_fix_chart_type(self, chart: dict) -> None:
         """Auto-correct chart type based on actual data patterns.
@@ -1461,13 +1809,38 @@ class ReportPipeline:
 
         # ── Post-processing: clean up after filter application ────────
         if "kpis" in report:
+            all_kpis_f = report["kpis"]
             valid_kpis = [
-                kpi for kpi in report["kpis"]
+                kpi for kpi in all_kpis_f
                 if kpi.get("value") not in (None, "N/A", "")
                 and not kpi.get("error")
             ]
-            if valid_kpis:
+            report["kpis"] = valid_kpis
+            logger.info("KPIs after filter cleanup: %d of %d valid", len(valid_kpis), len(all_kpis_f))
+
+            # Guarantee ≥6 KPIs even after filter application
+            if len(valid_kpis) < 6:
+                from ai.report_fallback_charts import detect_report_topic, get_fallback_kpis
+                # Determine topic from the report itself
+                topic = report.get("topic", "default")
+                existing_ids = {k.get("id", "") for k in valid_kpis}
+                fallback_kpis = get_fallback_kpis(topic)
+                for fb_kpi in fallback_kpis:
+                    if len(valid_kpis) >= 6:
+                        break
+                    if fb_kpi["id"] in existing_ids:
+                        continue
+                    fb_copy = dict(fb_kpi)
+                    if filters:
+                        fb_sql = _inject_filters(fb_copy.get("sql", ""), filters)
+                        fb_copy["sql"] = _fix_report_sql(fb_sql)
+                    executed = self._execute_kpi_sql(fb_copy)
+                    kpi_val = executed.get("value")
+                    if kpi_val not in (None, "N/A", "") and not executed.get("error"):
+                        valid_kpis.append(executed)
+                        existing_ids.add(fb_kpi["id"])
                 report["kpis"] = valid_kpis
+                logger.info("KPIs after filter fallback fill: %d total", len(valid_kpis))
 
         if "charts" in report:
             valid_charts = []
