@@ -945,29 +945,26 @@ class ReportPipeline:
         return f"₹{v:,.0f}"
 
     def _rebuild_chart_insight(self, chart: dict) -> None:
-        """Compute a factual chart_insight from real data rows.
+        """Compute a factual chart_insight directly from sorted SQL result rows.
 
-        Only fires when the LLM's insight looks hallucinated (contains
-        placeholder numbers like 1234567.89).
+        Always overwrites the LLM-generated insight — the LLM frequently names
+        the wrong top item (e.g. 'EARRINGS' when 'RING' is actually highest)
+        because it guesses from context rather than reading the actual values.
+        The data rows from the executed SQL are the ground truth.
         """
-        existing = chart.get("chart_insight", "") or ""
-        if not self._is_hallucinated_insight(existing):
-            return   # LLM provided a real insight — keep it
-
         data = chart.get("data") or []
         if not data:
             chart["chart_insight"] = "No data available for this chart."
             return
 
-        rows = data
-        title = chart.get("title", "")
+        rows     = data
+        title    = chart.get("title", "")
         chart_type = chart.get("type", "bar")
 
-        # Get column names of the first row
         first_row = dict(rows[0])
         cols = list(first_row.keys())
         if len(cols) < 2:
-            return  # can't build insight without label + value
+            return
 
         label_col = cols[0]
         value_col = cols[1]
@@ -983,45 +980,47 @@ class ReportPipeline:
             except (TypeError, ValueError):
                 return str(v)
 
-        # Time-series: report trend direction
-        if chart_type in ("line", "area") and len(rows) >= 2:
-            first_val = float(rows[0].get(value_col, 0) or 0)
-            last_val  = float(rows[-1].get(value_col, 0) or 0)
+        def _to_float(r):
+            try:
+                return float(r.get(value_col, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        n = len(rows)
+
+        # ── Time-series: use original row order to show trend ─────────────
+        if chart_type in ("line", "area") and n >= 2:
+            first_val = _to_float(rows[0])
+            last_val  = _to_float(rows[-1])
             direction = "increasing" if last_val > first_val else "decreasing"
-            first_lbl = rows[0].get(label_col, "")
-            last_lbl  = rows[-1].get(label_col, "")
             chart["chart_insight"] = (
                 f"{title} shows a {direction} trend from "
-                f"{_fmt(first_val)} ({first_lbl}) to {_fmt(last_val)} ({last_lbl})."
+                f"{_fmt(first_val)} ({rows[0].get(label_col, '')}) "
+                f"to {_fmt(last_val)} ({rows[-1].get(label_col, '')})."
             )
             return
 
-        # Ranking / bar / horizontalBar / doughnut: top-N summary
-        top = dict(rows[0])
-        top_label = top.get(label_col, "")
-        top_value = top.get(value_col, 0)
-        n = len(rows)
+        # ── Bar / doughnut / pie: sort by value to find real top ──────────
+        sorted_rows = sorted(rows, key=_to_float, reverse=True)
+        top         = sorted_rows[0]
+        top_label   = top.get(label_col, "")
+        top_value   = top.get(value_col, 0)
 
         if n == 1:
             chart["chart_insight"] = (
                 f"{top_label} accounts for the full value at {_fmt(top_value)}."
             )
         elif n == 2:
-            bot = dict(rows[1])
-            bot_label = bot.get(label_col, "")
-            bot_value = bot.get(value_col, 0)
+            bot = sorted_rows[1]
             chart["chart_insight"] = (
                 f"{top_label}: {_fmt(top_value)}. "
-                f"{bot_label}: {_fmt(bot_value)}."
+                f"{bot.get(label_col,'')}: {_fmt(bot.get(value_col,0))}."
             )
         else:
-            # Show top-2 and total
-            second = dict(rows[1])
-            second_label = second.get(label_col, "")
-            second_value = second.get(value_col, 0)
+            second = sorted_rows[1]
             chart["chart_insight"] = (
                 f"Top: {top_label} ({_fmt(top_value)}), "
-                f"followed by {second_label} ({_fmt(second_value)}) "
+                f"followed by {second.get(label_col,'')} ({_fmt(second.get(value_col,0))}) "
                 f"across {n} items."
             )
 

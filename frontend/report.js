@@ -52,6 +52,17 @@
     let currentReport = reportData.report;
     const applicableFilters = reportData.applicable_filters || {};
 
+    // ── Per-chart filter state ────────────────────────────────────────────
+    // Maps keyed by chartIdx (integer)
+    const chartOriginalData = {};  // {idx: original data array}
+    const chartSpecs = {};         // {idx: full chart spec object incl. .sql}
+    const chartFilters = {};       // {idx: {date_from, date_to, category, ...}}
+    const chartInstances = {};     // {idx: Chart.js instance}
+    let cachedFilterOptions = {};  // from /report/filters, loaded once
+    let activePanelIdx = null;     // which panel is currently open
+
+
+
     // ── Color Palettes ────────────────────────────────────────────────────
     const PALETTES = {
         blues:   ["#3b82f6","#2563eb","#1d4ed8","#60a5fa","#93c5fd","#1e40af"],
@@ -226,39 +237,27 @@
                 ["line", "area", "stackedbar"].includes((c.type || "bar").toLowerCase())
             );
 
-            // Simulate 2-col grid placement to find orphaned half-width charts.
-            // A half-width chart is orphaned when it is alone in its grid row
-            // (because the next chart is wide, or it is the last chart).
-            // Promote orphaned half-width charts to full-width to eliminate gaps.
             const shouldBeWide = [...naturallyWide];
-            let col = 0; // current column cursor (0 = left, 1 = right)
+            let col = 0;
             for (let i = 0; i < charts.length; i++) {
                 if (shouldBeWide[i]) {
-                    col = 0; // wide chart consumes full row, next starts at col 0
+                    col = 0;
                 } else {
                     if (col === 0) {
-                        // This chart is in the left column.
-                        // Look ahead: if the next chart is wide (or there is no next),
-                        // this chart would sit alone — promote it to full-width.
                         const nextWide = (i + 1 >= charts.length) || shouldBeWide[i + 1];
-                        if (nextWide) {
-                            shouldBeWide[i] = true;
-                            col = 0; // still starts fresh after a full-width
-                        } else {
-                            col = 1; // this takes col 0, next takes col 1
-                        }
-                    } else {
-                        col = 0; // paired with previous, next row starts at col 0
-                    }
+                        if (nextWide) { shouldBeWide[i] = true; col = 0; }
+                        else { col = 1; }
+                    } else { col = 0; }
                 }
             }
 
             charts.forEach((chart, idx) => {
                 const isWide = shouldBeWide[idx];
-                const chartTypeBadge = (chart.type || "bar").replace("horizontalBar","H.BAR").replace("stackedBar","STACKED").replace("doughnut","DONUT").toUpperCase();
+                const chartTypeBadge = (chart.type || "bar")
+                    .replace("horizontalBar","H.BAR").replace("stackedBar","STACKED")
+                    .replace("doughnut","DONUT").toUpperCase();
                 const chartInsight = chart.chart_insight || (chart.explanation && chart.explanation.insight) || "";
 
-                // Build a guaranteed explanation object
                 const expl = {
                     what:    (chart.explanation && chart.explanation.what)    || chart.title || "",
                     how:     (chart.explanation && chart.explanation.how)     || `${chartTypeBadge} chart — data grouped and aggregated from the database.`,
@@ -266,25 +265,33 @@
                     type:    chart.type || "bar",
                 };
 
-                html += `<div class="chart-card${isWide ? " chart-full-width" : ""}">
-                    <div class="chart-header">
+                const funnelSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`;
+
+                html += `<div class="chart-card${isWide ? " chart-full-width" : ""}" data-chart-idx="${idx}" style="position:relative;">
+                    <div class="chart-header" id="chart-header-${idx}">
                         <span class="chart-title">${escapeHtml(chart.title || "Chart " + (idx + 1))}</span>
-                        <div style="display:flex;align-items:center;gap:0.4rem">
+                        <div class="chart-header-right">
                             <span class="chart-type-badge">${chartTypeBadge}</span>
+                            <button class="chart-filter-btn" id="chart-filter-btn-${idx}" title="Chart Filters" data-chart-idx="${idx}">
+                                ${funnelSvg}
+                            </button>
                             <button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(expl))}' data-title="${escapeAttr(chart.title || "Chart")}">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                             </button>
                         </div>
+                        <div class="chart-filter-badges" id="chart-badges-${idx}"></div>
                     </div>
-                    <div class="chart-body">
+                    <div class="chart-body" id="chart-body-${idx}">
                         <canvas id="chart_${idx}"></canvas>
                     </div>
-                    ${chartInsight ? `<div class="chart-insight-text">💡 ${escapeHtml(chartInsight)}</div>` : ""}
+                    ${chartInsight ? `<div class="chart-insight-text">&#x1F4A1; ${escapeHtml(chartInsight)}</div>` : ""}
                 </div>`;
             });
 
             html += `</div>`;
         }
+
+
 
         // ── Data Table ────────────────────────────────────────────────────
         const table = report.table;
@@ -353,16 +360,23 @@
 
         content.innerHTML = html;
 
+        // ── Store per-chart data and spec ─────────────────────────────────
+        charts.forEach((chart, idx) => {
+            chartOriginalData[idx] = JSON.parse(JSON.stringify(chart.data || []));
+            chartSpecs[idx] = chart;  // full spec including .sql, .type, etc.
+            chartFilters[idx] = {};   // empty filter state
+        });
+
         // ── Render Charts ─────────────────────────────────────────────────
         charts.forEach((chart, idx) => {
             if (!chart.data || chart.data.length === 0) return;
             const canvas = document.getElementById(`chart_${idx}`);
             if (!canvas) return;
             try {
-                renderChart(canvas, chart);
+                const instance = renderChart(canvas, chart);
+                if (instance) chartInstances[idx] = instance;
             } catch (err) {
                 console.error(`Chart ${idx} render failed:`, err, chart);
-                // Hide the chart card entirely instead of showing an error
                 const card = canvas.closest(".chart-card");
                 if (card) card.style.display = "none";
             }
@@ -374,6 +388,15 @@
                 const explanation = JSON.parse(btn.dataset.explain);
                 const title = btn.dataset.title || "Explanation";
                 showExplanationModal(title, explanation);
+            });
+        });
+
+        // ── Wire per-chart filter buttons ─────────────────────────────────
+        content.querySelectorAll(".chart-filter-btn").forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.chartIdx, 10);
+                openChartFilterPanel(idx, btn);
             });
         });
 
@@ -396,12 +419,16 @@
         }
     }
 
+
     // ── Load Filter Options ───────────────────────────────────────────────
     async function loadFilterOptions() {
         try {
             const res = await fetch("/report/filters");
             if (!res.ok) return;
             const data = await res.json();
+
+            // Cache for per-chart panels
+            cachedFilterOptions = data;
 
             populateSelect("filterCategory", data.categories || []);
             populateSelect("filterCustomer", data.customers || []);
@@ -418,6 +445,7 @@
             console.warn("Failed to load filter options:", e);
         }
     }
+
 
     function populateSelect(id, options) {
         const el = document.getElementById(id);
@@ -574,8 +602,645 @@
         loadFilterOptions();
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //  PER-CHART LOCAL FILTER SYSTEM
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ── Date range quick-pill helpers ─────────────────────────────────────
+    function _dateQuickRange(preset) {
+        const today = new Date();
+        const y = today.getFullYear();
+        const m = today.getMonth(); // 0-based
+        const d = today.getDate();
+
+        let from, to;
+        to = today.toISOString().slice(0, 10);
+
+        if (preset === "MTD") {
+            from = new Date(y, m, 1).toISOString().slice(0, 10);
+        } else if (preset === "QTD") {
+            const qStart = Math.floor(m / 3) * 3;
+            from = new Date(y, qStart, 1).toISOString().slice(0, 10);
+        } else if (preset === "YTD") {
+            from = new Date(y, 0, 1).toISOString().slice(0, 10);
+        } else {
+            return null; // Custom — don't auto-fill
+        }
+        return { from, to };
+    }
+
+    // ── Open (or close) the filter panel for a chart ──────────────────────
+    // Panel attaches to document.body with position:fixed to escape
+    // .charts-grid's overflow:hidden clipping.
+    async function openChartFilterPanel(idx, anchorBtn) {
+        // Close any other open panel
+        if (activePanelIdx !== null && activePanelIdx !== idx) {
+            closeChartFilterPanel(activePanelIdx);
+        }
+
+        const existingPanel = document.getElementById(`cfp-${idx}`);
+        if (existingPanel) {
+            closeChartFilterPanel(idx);
+            return;
+        }
+
+        activePanelIdx = idx;
+
+        // ── Ensure filter options are loaded ──────────────────────────────
+        if (!cachedFilterOptions || !Object.keys(cachedFilterOptions).length) {
+            try {
+                const res = await fetch("/report/filters");
+                if (res.ok) cachedFilterOptions = await res.json();
+            } catch (_) {}
+        }
+
+        const filters = chartFilters[idx] || {};
+        const opts = cachedFilterOptions || {};
+        const activePreset = filters._datePreset || "";
+
+        // ── Build panel ───────────────────────────────────────────────────
+        const panel = document.createElement("div");
+        panel.className = "chart-filter-panel";
+        panel.id = `cfp-${idx}`;
+        panel.setAttribute("data-chart-idx", idx);
+        panel.style.position = "fixed";
+        panel.style.zIndex   = "99999";
+
+        // ── Determine which filters are relevant for THIS chart ──────────
+        const spec = chartSpecs[idx] || {};
+        const sql  = (spec.sql || "").toLowerCase();
+        const cType = (spec.type || "bar").toLowerCase();
+        const colNames = (spec.data && spec.data[0]) ? Object.keys(spec.data[0]).map(c => c.toLowerCase()) : [];
+        const chartTitle = (spec.title || "").toLowerCase();
+
+        // Date Range: show for time-series OR queries touching sales_order / order_date
+        const isTimeSeries = ["line", "area"].includes(cType);
+        const hasDateCol = colNames.some(c => /date|month|year|quarter|week|period/.test(c));
+        const sqlHasDate = /order_date|sales_order/.test(sql);
+        const showDate = isTimeSeries || hasDateCol || sqlHasDate;
+
+        // Category: show only if SQL or columns reference category
+        const sqlHasCategory = /category|product_master/.test(sql);
+        const colHasCategory = colNames.some(c => /category|type/.test(c));
+        const showCategory = (sqlHasCategory || colHasCategory) && opts.categories && opts.categories.length;
+
+        // Product: show only if SQL or columns reference product
+        const sqlHasProduct = /product_name|product_master/.test(sql);
+        const colHasProduct = colNames.some(c => /product/.test(c));
+        const showProduct = (sqlHasProduct || colHasProduct) && opts.products && opts.products.length;
+
+        // Status: show only if SQL or columns reference status
+        const sqlHasStatus = /\.status\b/.test(sql);
+        const colHasStatus = colNames.some(c => /status/.test(c));
+        const showStatus = (sqlHasStatus || colHasStatus) && opts.statuses && opts.statuses.length;
+
+        // Top N: show for ranking charts (bar, horizontalBar, doughnut, pie), NOT for time-series
+        const showTopN = !isTimeSeries && ["bar", "horizontalbar", "doughnut", "pie", "radar"].includes(cType);
+
+        // Compare (vs LM/LY): show for time-series or date-based charts
+        const showCompare = showDate;
+
+        // ── Build only the relevant filter sections ──────────────────────
+        let panelBody = "";
+
+        // Date Range
+        if (showDate) {
+            panelBody += `
+            <div class="cfp-row">
+                <div class="cfp-row-label">Date Range</div>
+                <div class="cfp-pills">
+                    <button class="cfp-pill${activePreset==="MTD"?" active":""}" data-preset="MTD">MTD</button>
+                    <button class="cfp-pill${activePreset==="QTD"?" active":""}" data-preset="QTD">QTD</button>
+                    <button class="cfp-pill${activePreset==="YTD"?" active":""}" data-preset="YTD">YTD</button>
+                    <button class="cfp-pill${activePreset==="Custom"?" active":""}" data-preset="Custom">Custom</button>
+                </div>
+                <div class="cfp-date-range" id="cfp-custom-date-${idx}" style="${activePreset!=="Custom"?"display:none":"display:flex"}">
+                    <input type="date" class="cfp-date-input" id="cfp-from-${idx}" value="${filters.date_from||""}" placeholder="From">
+                    <span class="cfp-date-sep">–</span>
+                    <input type="date" class="cfp-date-input" id="cfp-to-${idx}" value="${filters.date_to||""}" placeholder="To">
+                </div>
+            </div>`;
+        }
+
+        // Category
+        if (showCategory) {
+            panelBody += `
+            <div class="cfp-row">
+                <div class="cfp-row-label">Category</div>
+                <select class="cfp-select" id="cfp-cat-${idx}">
+                    <option value="">All Categories</option>
+                    ${(opts.categories||[]).map(c => `<option value="${escapeAttr(c)}"${filters.category===c?" selected":""}>${escapeHtml(c)}</option>`).join("")}
+                </select>
+            </div>`;
+        }
+
+        // Product
+        if (showProduct) {
+            panelBody += `
+            <div class="cfp-row">
+                <div class="cfp-row-label">Product</div>
+                <select class="cfp-select" id="cfp-prod-${idx}">
+                    <option value="">All Products</option>
+                    ${(opts.products||[]).map(p => `<option value="${escapeAttr(p)}"${filters.product===p?" selected":""}>${escapeHtml(p)}</option>`).join("")}
+                </select>
+            </div>`;
+        }
+
+        // Status
+        if (showStatus) {
+            panelBody += `
+            <div class="cfp-row">
+                <div class="cfp-row-label">Status</div>
+                <select class="cfp-select" id="cfp-status-${idx}">
+                    <option value="">All Statuses</option>
+                    ${(opts.statuses||[]).map(s => `<option value="${escapeAttr(s)}"${filters.status===s?" selected":""}>${escapeHtml(s)}</option>`).join("")}
+                </select>
+            </div>`;
+        }
+
+        // Top N
+        if (showTopN) {
+            panelBody += `
+            <div class="cfp-row">
+                <div class="cfp-row-label">Show Top</div>
+                <div class="cfp-toggle-row">
+                    <button class="cfp-toggle${!filters.top_n?" active":""}" data-topn="0">All</button>
+                    <button class="cfp-toggle${filters.top_n===5?" active":""}" data-topn="5">Top 5</button>
+                    <button class="cfp-toggle${filters.top_n===10?" active":""}" data-topn="10">Top 10</button>
+                </div>
+            </div>`;
+        }
+
+        // Compare
+        if (showCompare) {
+            panelBody += `
+            <div class="cfp-row">
+                <div class="cfp-row-label">Compare</div>
+                <div class="cfp-toggle-row">
+                    <button class="cfp-toggle${filters.compare_lm?" active":""}" data-compare="lm">vs Last Month</button>
+                    <button class="cfp-toggle${filters.compare_ly?" active":""}" data-compare="ly">vs Last Year</button>
+                </div>
+            </div>`;
+        }
+
+        panel.innerHTML = `
+            <div class="cfp-header">
+                <div class="cfp-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                    Chart Filters
+                </div>
+                <button class="cfp-close" title="Close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            ${panelBody}
+            <div class="cfp-footer">
+                <button class="cfp-apply-btn" id="cfp-apply-${idx}">Apply</button>
+                <button class="cfp-reset-btn" id="cfp-reset-${idx}">Reset</button>
+            </div>
+        `;
+
+
+        // Append to body — escapes overflow:hidden on .charts-grid
+        document.body.appendChild(panel);
+
+        // ── Position: anchor below the filter button (viewport-relative) ──
+        function positionPanel() {
+            const rect   = anchorBtn.getBoundingClientRect();
+            const panelW = 292;
+            const vw     = window.innerWidth;
+            const vh     = window.innerHeight;
+
+            let left = rect.right - panelW;
+            if (left < 8)       left = 8;
+            if (left + panelW > vw - 8) left = vw - panelW - 8;
+
+            let top = rect.bottom + 6;
+            // If the panel would go off the bottom, show above the button
+            const estPanelH = 420;  // approximate panel height
+            if (top + estPanelH > vh - 8) top = rect.top - estPanelH - 6;
+            if (top < 8) top = 8;
+
+            panel.style.top   = top     + "px";
+            panel.style.left  = left    + "px";
+            panel.style.right = "auto";
+            panel.style.width = panelW  + "px";
+        }
+        positionPanel();
+
+        // Reposition on scroll/resize
+        const _reposition = () => positionPanel();
+        window.addEventListener("scroll", _reposition, true);
+        window.addEventListener("resize", _reposition);
+        panel._cleanup = () => {
+            window.removeEventListener("scroll", _reposition, true);
+            window.removeEventListener("resize", _reposition);
+        };
+
+        // ── Wire panel events ─────────────────────────────────────────────
+
+        // Close
+        panel.querySelector(".cfp-close").addEventListener("click", (e) => {
+            e.stopPropagation();
+            closeChartFilterPanel(idx);
+        });
+
+        // Date preset pills
+        panel.querySelectorAll(".cfp-pill").forEach(pill => {
+            pill.addEventListener("click", () => {
+                panel.querySelectorAll(".cfp-pill").forEach(p => p.classList.remove("active"));
+                pill.classList.add("active");
+                const preset = pill.dataset.preset;
+                const customRow = document.getElementById(`cfp-custom-date-${idx}`);
+                if (preset === "Custom") {
+                    if (customRow) customRow.style.display = "flex";
+                } else {
+                    if (customRow) customRow.style.display = "none";
+                    const range = _dateQuickRange(preset);
+                    if (range) {
+                        const fromEl = document.getElementById(`cfp-from-${idx}`);
+                        const toEl   = document.getElementById(`cfp-to-${idx}`);
+                        if (fromEl) fromEl.value = range.from;
+                        if (toEl)   toEl.value   = range.to;
+                    }
+                }
+            });
+        });
+
+        // Top-N toggles (single-select)
+        panel.querySelectorAll("[data-topn]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                panel.querySelectorAll("[data-topn]").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+            });
+        });
+
+        // Compare toggles (multi-select)
+        panel.querySelectorAll("[data-compare]").forEach(btn => {
+            btn.addEventListener("click", () => btn.classList.toggle("active"));
+        });
+
+        // Apply & Reset
+        document.getElementById(`cfp-apply-${idx}`).addEventListener("click", (e) => { e.stopPropagation(); applyChartFilter(idx); });
+        document.getElementById(`cfp-reset-${idx}`).addEventListener("click", (e) => { e.stopPropagation(); resetChartFilter(idx); });
+
+        // Click-outside to close
+        setTimeout(() => {
+            document.addEventListener("click", _globalPanelClose);
+        }, 60);
+    }
+
+    function _globalPanelClose(e) {
+        if (activePanelIdx === null) return;
+        const panel = document.getElementById(`cfp-${activePanelIdx}`);
+        const btn   = document.getElementById(`chart-filter-btn-${activePanelIdx}`);
+        if (panel && !panel.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
+            closeChartFilterPanel(activePanelIdx);
+        }
+    }
+
+    function closeChartFilterPanel(idx) {
+        const panel = document.getElementById(`cfp-${idx}`);
+        if (panel) {
+            if (panel._cleanup) panel._cleanup();
+            panel.remove();
+        }
+        activePanelIdx = null;
+        document.removeEventListener("click", _globalPanelClose);
+    }
+
+
+
+
+    // ── Apply the filter panel state to a specific chart ─────────────────
+    async function applyChartFilter(idx) {
+
+        const panel = document.getElementById(`cfp-${idx}`);
+        if (!panel) return;
+
+        const applyBtn = document.getElementById(`cfp-apply-${idx}`);
+        if (applyBtn) { applyBtn.textContent = "Loading…"; applyBtn.disabled = true; }
+
+        // Read current panel values
+        const activePresetEl = panel.querySelector(".cfp-pill.active");
+        const activePreset = activePresetEl ? activePresetEl.dataset.preset : "";
+
+        const date_from = document.getElementById(`cfp-from-${idx}`)?.value || null;
+        const date_to   = document.getElementById(`cfp-to-${idx}`)?.value   || null;
+        const category  = document.getElementById(`cfp-cat-${idx}`)?.value   || null;
+        const product   = document.getElementById(`cfp-prod-${idx}`)?.value  || null;
+        const status    = document.getElementById(`cfp-status-${idx}`)?.value || null;
+
+        const activeTopNEl = panel.querySelector("[data-topn].active");
+        const top_n = activeTopNEl ? parseInt(activeTopNEl.dataset.topn, 10) || null : null;
+
+        const compare_lm = panel.querySelector("[data-compare='lm']")?.classList.contains("active") || false;
+        const compare_ly = panel.querySelector("[data-compare='ly']")?.classList.contains("active") || false;
+
+        // Save filter state for badge rendering
+        chartFilters[idx] = {
+            _datePreset: activePreset,
+            date_from: activePreset !== "Custom" ? (date_from || null) : date_from,
+            date_to:   activePreset !== "Custom" ? (date_to   || null) : date_to,
+            category:  category  || null,
+            product:   product   || null,
+            status:    status    || null,
+            top_n:     top_n     || null,
+            compare_lm,
+            compare_ly,
+        };
+
+        const spec = chartSpecs[idx];
+        const hasSQLFilter = date_from || date_to || category || product || status || compare_lm || compare_ly;
+
+        // Show spinner in chart body
+        const chartBody = document.getElementById(`chart-body-${idx}`);
+        if (chartBody) {
+            const overlay = document.createElement("div");
+            overlay.className = "chart-loading-overlay";
+            overlay.id = `cfp-spinner-${idx}`;
+            overlay.innerHTML = `<div class="chart-loading-spinner"></div>`;
+            chartBody.appendChild(overlay);
+        }
+
+        try {
+            let newData = null;
+
+            if (hasSQLFilter && spec && spec.sql) {
+                // ── Server-side SQL filter ────────────────────────────────
+                const res = await fetch("/report/apply-chart-filter", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sql: spec.sql,
+                        date_from: date_from || null,
+                        date_to:   date_to   || null,
+                        category:  category  || null,
+                        product:   product   || null,
+                        status:    status    || null,
+                        top_n:     top_n     || null,
+                        compare_lm,
+                        compare_ly,
+                        provider: localStorage.getItem(reportId + "_provider") || "groq",
+                    }),
+                });
+                if (res.ok) {
+                    const result = await res.json();
+                    if (!result.error) {
+                        newData = result.data;
+                    } else {
+                        console.warn(`Chart ${idx} filter error:`, result.error);
+                    }
+                }
+            } else {
+                // ── Client-side only (Top N) ──────────────────────────────
+                newData = JSON.parse(JSON.stringify(chartOriginalData[idx] || []));
+                if (top_n && newData.length) {
+                    const keys = Object.keys(newData[0]);
+                    if (keys.length >= 2) {
+                        const valKey = keys[1];
+                        try {
+                            newData = newData.sort((a, b) => (parseFloat(b[valKey]||0) - parseFloat(a[valKey]||0))).slice(0, top_n);
+                        } catch(_) { newData = newData.slice(0, top_n); }
+                    }
+                }
+            }
+
+            if (newData !== null) {
+                // Destroy old chart instance
+                if (chartInstances[idx]) {
+                    try { chartInstances[idx].destroy(); } catch(_) {}
+                    delete chartInstances[idx];
+                }
+                // Re-create canvas (chart.js needs a fresh canvas after destroy)
+                if (chartBody) {
+                    const oldCanvas = document.getElementById(`chart_${idx}`);
+                    if (oldCanvas) oldCanvas.remove();
+                    const newCanvas = document.createElement("canvas");
+                    newCanvas.id = `chart_${idx}`;
+                    chartBody.appendChild(newCanvas);
+
+                    const updatedSpec = { ...spec, data: newData };
+                    try {
+                        const inst = renderChart(newCanvas, updatedSpec);
+                        if (inst) chartInstances[idx] = inst;
+                    } catch (err) {
+                        console.error("Chart re-render failed:", err);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Chart filter apply failed:", err);
+        }
+
+        // Remove spinner
+        const spinner = document.getElementById(`cfp-spinner-${idx}`);
+        if (spinner) spinner.remove();
+
+        if (applyBtn) { applyBtn.textContent = "Apply"; applyBtn.disabled = false; }
+
+        // Update filter button appearance and badges
+        updateChartFilterState(idx);
+
+        // Close panel
+        closeChartFilterPanel(idx);
+    }
+
+    // ── Reset a chart's filters to original data ──────────────────────────
+    function resetChartFilter(idx) {
+        chartFilters[idx] = {};
+
+        const spec = chartSpecs[idx];
+        const originalData = chartOriginalData[idx];
+        if (!spec || !originalData) { closeChartFilterPanel(idx); return; }
+
+        // Destroy old instance
+        if (chartInstances[idx]) {
+            try { chartInstances[idx].destroy(); } catch(_) {}
+            delete chartInstances[idx];
+        }
+
+        // Re-create canvas
+        const chartBody = document.getElementById(`chart-body-${idx}`);
+        if (chartBody) {
+            const oldCanvas = document.getElementById(`chart_${idx}`);
+            if (oldCanvas) oldCanvas.remove();
+            const newCanvas = document.createElement("canvas");
+            newCanvas.id = `chart_${idx}`;
+            chartBody.appendChild(newCanvas);
+
+            const resetSpec = { ...spec, data: JSON.parse(JSON.stringify(originalData)) };
+            try {
+                const inst = renderChart(newCanvas, resetSpec);
+                if (inst) chartInstances[idx] = inst;
+            } catch (err) {
+                console.error("Chart reset re-render failed:", err);
+            }
+        }
+
+        updateChartFilterState(idx);
+        closeChartFilterPanel(idx);
+    }
+
+    // ── Update filter button highlight and badge strip ────────────────────
+    function updateChartFilterState(idx) {
+        const filters = chartFilters[idx] || {};
+        const btn = document.getElementById(`chart-filter-btn-${idx}`);
+        const badgeContainer = document.getElementById(`chart-badges-${idx}`);
+
+        const BADGE_DEFS = [
+            { key: "_datePreset", label: f => f._datePreset ? `Date: ${f._datePreset}` : null },
+            { key: "date_from",   label: f => (f._datePreset === "Custom" && f.date_from) ? `From: ${f.date_from}` : null },
+            { key: "date_to",     label: f => (f._datePreset === "Custom" && f.date_to) ? `To: ${f.date_to}` : null },
+            { key: "category",    label: f => f.category ? `Category: ${f.category}` : null },
+            { key: "product",     label: f => f.product   ? `Product: ${f.product.substring(0,18)}${f.product.length>18?"…":""}` : null },
+            { key: "status",      label: f => f.status    ? `Status: ${f.status}` : null },
+            { key: "top_n",       label: f => f.top_n     ? `Top ${f.top_n}` : null },
+            { key: "compare_lm",  label: f => f.compare_lm ? "vs Last Month" : null },
+            { key: "compare_ly",  label: f => f.compare_ly ? "vs Last Year"  : null },
+        ];
+
+        const activeBadges = BADGE_DEFS.map(def => ({
+            key: def.key,
+            label: def.label(filters),
+        })).filter(b => b.label !== null);
+
+        const hasFilters = activeBadges.length > 0;
+
+        // Update button state
+        if (btn) {
+            btn.classList.toggle("has-filters", hasFilters);
+            btn.title = hasFilters ? `${activeBadges.length} filter(s) active` : "Chart Filters";
+        }
+
+        // Render badges
+        if (badgeContainer) {
+            badgeContainer.innerHTML = activeBadges.map(b => `
+                <span class="chart-filter-badge">
+                    ${escapeHtml(b.label)}
+                    <button class="chart-filter-badge-remove" data-chart-idx="${idx}" data-filter-key="${b.key}" title="Remove filter">×</button>
+                </span>
+            `).join("");
+
+            // Wire badge remove buttons
+            badgeContainer.querySelectorAll(".chart-filter-badge-remove").forEach(removeBtn => {
+                removeBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const filterKey = removeBtn.dataset.filterKey;
+                    removeSingleChartFilter(idx, filterKey);
+                });
+            });
+        }
+    }
+
+    // ── Remove one specific filter from a chart ───────────────────────────
+    async function removeSingleChartFilter(idx, filterKey) {
+        const filters = chartFilters[idx] || {};
+
+        // Clear the relevant filter keys
+        if (filterKey === "_datePreset") {
+            delete filters._datePreset;
+            delete filters.date_from;
+            delete filters.date_to;
+        } else if (filterKey === "date_from") {
+            delete filters.date_from;
+            if (filters._datePreset === "Custom" && !filters.date_to) delete filters._datePreset;
+        } else if (filterKey === "date_to") {
+            delete filters.date_to;
+            if (filters._datePreset === "Custom" && !filters.date_from) delete filters._datePreset;
+        } else {
+            delete filters[filterKey];
+        }
+
+        chartFilters[idx] = filters;
+
+        // Re-apply remaining filters
+        const spec = chartSpecs[idx];
+        const originalData = chartOriginalData[idx];
+        if (!spec || !originalData) { updateChartFilterState(idx); return; }
+
+        const hasAny = Object.keys(filters).some(k => k !== "_datePreset" && filters[k]);
+        let newData;
+
+        if (hasAny && spec.sql) {
+            const showSpinner = () => {
+                const chartBody = document.getElementById(`chart-body-${idx}`);
+                if (chartBody && !document.getElementById(`cfp-spinner-${idx}`)) {
+                    const overlay = document.createElement("div");
+                    overlay.className = "chart-loading-overlay";
+                    overlay.id = `cfp-spinner-${idx}`;
+                    overlay.innerHTML = `<div class="chart-loading-spinner"></div>`;
+                    chartBody.appendChild(overlay);
+                }
+            };
+            showSpinner();
+
+            try {
+                const res = await fetch("/report/apply-chart-filter", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sql: spec.sql,
+                        date_from: filters.date_from || null,
+                        date_to:   filters.date_to   || null,
+                        category:  filters.category  || null,
+                        product:   filters.product   || null,
+                        status:    filters.status    || null,
+                        top_n:     filters.top_n     || null,
+                        compare_lm: !!filters.compare_lm,
+                        compare_ly: !!filters.compare_ly,
+                        provider: localStorage.getItem(reportId + "_provider") || "groq",
+                    }),
+                });
+                if (res.ok) {
+                    const result = await res.json();
+                    newData = result.error ? JSON.parse(JSON.stringify(originalData)) : result.data;
+                }
+            } catch (_) {
+                newData = JSON.parse(JSON.stringify(originalData));
+            }
+
+            const spinner = document.getElementById(`cfp-spinner-${idx}`);
+            if (spinner) spinner.remove();
+        } else {
+            // No active filters — restore original, apply only client-side
+            newData = JSON.parse(JSON.stringify(originalData));
+            if (filters.top_n && newData.length) {
+                const keys = Object.keys(newData[0]);
+                if (keys.length >= 2) {
+                    const valKey = keys[1];
+                    try { newData = newData.sort((a,b)=>parseFloat(b[valKey]||0)-parseFloat(a[valKey]||0)).slice(0, filters.top_n); }
+                    catch(_) { newData = newData.slice(0, filters.top_n); }
+                }
+            }
+        }
+
+        if (newData !== null && newData !== undefined) {
+            if (chartInstances[idx]) {
+                try { chartInstances[idx].destroy(); } catch(_) {}
+                delete chartInstances[idx];
+            }
+            const chartBody = document.getElementById(`chart-body-${idx}`);
+            if (chartBody) {
+                const oldCanvas = document.getElementById(`chart_${idx}`);
+                if (oldCanvas) oldCanvas.remove();
+                const newCanvas = document.createElement("canvas");
+                newCanvas.id = `chart_${idx}`;
+                chartBody.appendChild(newCanvas);
+                const updatedSpec = { ...spec, data: newData };
+                try {
+                    const inst = renderChart(newCanvas, updatedSpec);
+                    if (inst) chartInstances[idx] = inst;
+                } catch (_) {}
+            }
+        }
+
+        updateChartFilterState(idx);
+    }
+
     // ── Chart Rendering ───────────────────────────────────────────────────
     function renderChart(canvas, chartSpec) {
+
         const data = chartSpec.data;
         if (!data || data.length === 0) return;
 
@@ -839,8 +1504,9 @@
         // Sync height with CSS: wide cards = 310px, regular = 270px
         const isWideCard = canvas.closest(".chart-full-width") !== null;
         canvas.parentElement.style.height = isWideCard ? "310px" : "270px";
-        new Chart(canvas, config);
+        return new Chart(canvas, config);
     }
+
 
     function isPieType(type) { return ["pie", "doughnut"].includes(type); }
     function formatColumnName(name) { return name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()); }

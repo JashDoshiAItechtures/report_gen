@@ -118,6 +118,21 @@ class ReportApplyFiltersRequest(BaseModel):
     provider: str = "groq"
 
 
+class ReportChartFilterRequest(BaseModel):
+    """Apply filters to a single chart's SQL and return updated data."""
+    sql: str                         # Original chart SQL
+    date_from: str | None = None
+    date_to: str | None = None
+    category: str | None = None
+    customer: str | None = None
+    status: str | None = None
+    product: str | None = None
+    top_n: int | None = None         # 5 or 10 — applied after SQL (client hint)
+    compare_lm: bool = False         # last-month comparison series
+    compare_ly: bool = False         # last-year comparison series
+    provider: str = "groq"
+
+
 class ReportModifyRequest(BaseModel):
     report_json: str
     modification: str
@@ -373,6 +388,130 @@ def report_apply_filters_endpoint(req: ReportApplyFiltersRequest):
     return pipeline.apply_filters(req.report, filters)
 
 
+@app.post("/report/apply-chart-filter")
+def report_apply_chart_filter_endpoint(req: ReportChartFilterRequest):
+    """Re-execute a single chart's SQL with injected filters.
+
+    Much faster than applying filters to the whole report — only one SQL
+    query is run, so the response is nearly instant.
+
+    Returns:
+        { "data": [...], "error": null | "..." }
+    """
+    from ai.report_generator import _inject_filters, _fix_report_sql
+    from db.executor import execute_sql
+
+    filters = {}
+    if req.date_from:
+        filters["date_from"] = req.date_from
+    if req.date_to:
+        filters["date_to"] = req.date_to
+    if req.category:
+        filters["category"] = req.category
+    if req.customer:
+        filters["customer"] = req.customer
+    if req.status:
+        filters["status"] = req.status
+    if req.product:
+        filters["product"] = req.product
+
+    logger.info("CHART APPLY-FILTER | top_n=%s lm=%s ly=%s filters=%s",
+                req.top_n, req.compare_lm, req.compare_ly, filters)
+
+    try:
+        sql = _inject_filters(_fix_report_sql(req.sql), filters)
+        result = execute_sql(sql)
+
+        if not result.get("success"):
+            return {"data": [], "error": result.get("error", "SQL error")}
+
+        data = result.get("data", [])
+
+        # ── Top-N slicing ──────────────────────────────────────────────────
+        if req.top_n and data:
+            keys = list(data[0].keys())
+            if len(keys) >= 2:
+                val_key = keys[1]
+                try:
+                    data = sorted(
+                        data,
+                        key=lambda r: float(r.get(val_key) or 0),
+                        reverse=True,
+                    )[:req.top_n]
+                except (TypeError, ValueError):
+                    data = data[:req.top_n]
+
+        # ── Compare LM (last-month) ────────────────────────────────────────
+        # Compute a parallel query over the prior calendar month and merge
+        # as a second value column "prev_month".
+        if req.compare_lm and data:
+            import re as _re
+            # Inject a last-month date window on top of the existing SQL
+            from datetime import date, timedelta
+            today = date.today()
+            first_this = today.replace(day=1)
+            last_lm = first_this - timedelta(days=1)
+            first_lm = last_lm.replace(day=1)
+            lm_filters = {**filters,
+                          "date_from": str(first_lm), "date_to": str(last_lm)}
+            lm_sql = _inject_filters(_fix_report_sql(req.sql), lm_filters)
+            lm_result = execute_sql(lm_sql)
+            if lm_result.get("success") and lm_result.get("data"):
+                lm_data = lm_result["data"]
+                # Build lookup: label → value
+                if lm_data:
+                    keys = list(lm_data[0].keys())
+                    lm_lookup = {str(r[keys[0]]): r[keys[1]] for r in lm_data}
+                    curr_keys = list(data[0].keys())
+                    for row in data:
+                        lbl = str(row[curr_keys[0]])
+                        row["prev_month"] = lm_lookup.get(lbl, 0)
+
+        # ── Compare LY (last-year) ─────────────────────────────────────────
+        if req.compare_ly and data:
+            from datetime import date, timedelta
+            today = date.today()
+            ly_filters = dict(filters)
+            if req.date_from:
+                try:
+                    d = date.fromisoformat(req.date_from)
+                    ly_filters["date_from"] = str(d.replace(year=d.year - 1))
+                except ValueError:
+                    ly_filters["date_from"] = str(today.replace(year=today.year - 1,
+                                                                  month=1, day=1))
+            else:
+                ly_filters["date_from"] = str(today.replace(year=today.year - 1,
+                                                              month=1, day=1))
+            if req.date_to:
+                try:
+                    d = date.fromisoformat(req.date_to)
+                    ly_filters["date_to"] = str(d.replace(year=d.year - 1))
+                except ValueError:
+                    ly_filters["date_to"] = str(today.replace(year=today.year - 1,
+                                                                month=12, day=31))
+            else:
+                ly_filters["date_to"] = str(today.replace(year=today.year - 1,
+                                                            month=12, day=31))
+
+            ly_sql = _inject_filters(_fix_report_sql(req.sql), ly_filters)
+            ly_result = execute_sql(ly_sql)
+            if ly_result.get("success") and ly_result.get("data"):
+                ly_data = ly_result["data"]
+                if ly_data:
+                    keys = list(ly_data[0].keys())
+                    ly_lookup = {str(r[keys[0]]): r[keys[1]] for r in ly_data}
+                    curr_keys = list(data[0].keys())
+                    for row in data:
+                        lbl = str(row[curr_keys[0]])
+                        row["prev_year"] = ly_lookup.get(lbl, 0)
+
+        return {"data": data, "error": None}
+
+    except Exception as exc:
+        logger.error("CHART APPLY-FILTER error: %s", exc)
+        return {"data": [], "error": str(exc)}
+
+
 @app.post("/report/modify")
 def report_modify_endpoint(req: ReportModifyRequest):
     """Modify an existing report based on a natural-language command."""
@@ -381,6 +520,7 @@ def report_modify_endpoint(req: ReportModifyRequest):
     logger.info("REPORT MODIFY | command=%s", req.modification)
     pipeline = ReportPipeline(provider=req.provider)
     return pipeline.modify(req.report_json, req.modification)
+
 
 
 # ── Data modification endpoints (two-phase: preview then execute) ────────────
