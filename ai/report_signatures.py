@@ -99,11 +99,11 @@ class ReportGeneration(dspy.Signature):
 
     ─── IF the user asks about Vendors / Procurement / POs ──────
       1. Top 10 Vendors by PO Value (horizontalBar)
-      2. Monthly PO Spend Trend (area) — SUM(total_amount) by created_at month
-      3. PO Status Breakdown (doughnut)
-      4. Open vs Closed PO Value (bar)
-      5. Top Vendors by PO Count (bar)
-      6. Gold vs Diamond vs Labour Cost Mix (doughnut) — SUM of each component
+      2. Material Spend Mix (doughnut) — Gold vs Diamond vs Labour cost aggregate via UNION ALL
+      3. Monthly Procurement Spend Trend (area) — SUM(total_amount) by created_at month
+      4. Open vs Closed PO Value (bar) — comparison of pending vs realized spend
+      5. Monthly Gold Weight Procured (line) — SUM(total_gold_wt) trend
+      6. Top Vendors by Diamond Carat Volume (horizontalBar) — SUM(total_diamond_cts)
 
     ─── IF the user asks about Gold / Diamond / Material costs ───
       1. Monthly Gold Weight Procured (area) — SUM(total_gold_wt) by created_at month

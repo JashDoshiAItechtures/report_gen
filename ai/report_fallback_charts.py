@@ -232,10 +232,11 @@ _CUSTOMER_CHARTS = [
     _chart(
         "fb_c5", "Orders by Status per Month", "stackedBar",
         """SELECT TO_CHAR(so.order_date, 'YYYY-MM') AS month,
-               so.status AS status,
-               COUNT(so.so_id) AS order_count
+               COUNT(*) FILTER (WHERE so.status = 'closed') AS closed,
+               COUNT(*) FILTER (WHERE so.status = 'open') AS open,
+               COUNT(*) FILTER (WHERE so.status = 'cancelled') AS cancelled
         FROM sales_order so
-        GROUP BY month, so.status ORDER BY month LIMIT 48""",
+        GROUP BY month ORDER BY month LIMIT 24""",
         "Month", "Order Count", "mixed",
         "Stacked view of order statuses by month shows fulfillment patterns over time.",
     ),
@@ -339,55 +340,58 @@ _VENDOR_CHARTS = [
         JOIN vendor_master vm ON po.vendor_id = vm.vendor_id
         GROUP BY vm.vendor_name ORDER BY po_value DESC LIMIT 10""",
         "PO Value (₹)", "Vendor", "blues",
-        "Your highest-value vendors by total purchase order amount.",
+        "Your highest-value vendors by total purchase order amount — these are your key supply partners.",
     ),
     _chart(
-        "fb_v2", "PO Status Distribution", "doughnut",
-        """SELECT po.status AS status, COUNT(po.po_id) AS po_count
-        FROM purchase_order po
-        GROUP BY po.status ORDER BY po_count DESC""",
-        "Status", "PO Count", "oranges",
-        "Shows open vs closed vs cancelled POs to assess procurement pipeline health.",
+        "fb_v2", "Material Spend Mix", "doughnut",
+        """SELECT 'Gold' AS material, ROUND(SUM(total_gold_amount)::numeric, 0) AS amount FROM purchase_order
+        UNION ALL
+        SELECT 'Diamond' AS material, ROUND(SUM(total_diamond_amount)::numeric, 0) AS amount FROM purchase_order
+        UNION ALL
+        SELECT 'Labour' AS material, ROUND(SUM(total_labour_amount)::numeric, 0) AS amount FROM purchase_order
+        ORDER BY amount DESC""",
+        "Material", "Spend (₹)", "mixed",
+        "Breaks down total procurement spend into raw materials and labour costs.",
     ),
     _chart(
-        "fb_v3", "Monthly PO Value Trend", "area",
+        "fb_v3", "Monthly Spend Trend", "area",
         """SELECT TO_CHAR(po.created_at, 'YYYY-MM') AS month,
                ROUND(SUM(po.total_amount)::numeric, 0) AS po_value
         FROM purchase_order po
         GROUP BY month ORDER BY month LIMIT 24""",
-        "Month", "PO Value (₹)", "greens",
-        "Tracks procurement spend over time to identify purchasing seasonality.",
+        "Month", "Spend (₹)", "greens",
+        "Tracks month-over-month procurement spend to identify purchasing cycles and budget trends.",
     ),
     _chart(
-        "fb_v4", "Top 10 Vendors by Order Count", "bar",
-        """SELECT vm.vendor_name AS vendor,
-               COUNT(po.po_id) AS po_count
-        FROM purchase_order po
-        JOIN vendor_master vm ON po.vendor_id = vm.vendor_id
-        GROUP BY vm.vendor_name ORDER BY po_count DESC LIMIT 10""",
-        "Vendor", "PO Count", "purples",
-        "Most frequently used vendors — high PO count signals supply dependency.",
-    ),
-    _chart(
-        "fb_v5", "Average PO Value by Month", "line",
-        """SELECT TO_CHAR(po.created_at, 'YYYY-MM') AS month,
-               ROUND(AVG(po.total_amount)::numeric, 0) AS avg_po_value
-        FROM purchase_order po
-        GROUP BY month ORDER BY month LIMIT 24""",
-        "Month", "Avg PO Value (₹)", "mixed",
-        "Average purchase order value trend — rising values indicate larger bulk orders.",
-    ),
-    _chart(
-        "fb_v6", "PO Value by Status", "bar",
+        "fb_v4", "Open vs Closed PO Value", "bar",
         """SELECT po.status AS status,
-               ROUND(SUM(po.total_amount)::numeric, 0) AS total_value,
-               COUNT(po.po_id) AS po_count
+               ROUND(SUM(po.total_amount)::numeric, 0) AS total_value
         FROM purchase_order po
+        WHERE po.status IN ('open', 'closed')
         GROUP BY po.status ORDER BY total_value DESC""",
-        "Status", "Total PO Value (₹)", "gradient",
-        "Compares total procurement value across different PO statuses.",
+        "Status", "PO Value (₹)", "purples",
+        "Compares value of completed deliveries (closed) vs pending commitments (open).",
+    ),
+    _chart(
+        "fb_v5", "Monthly Material Weight Trend", "line",
+        """SELECT TO_CHAR(po.created_at, 'YYYY-MM') AS month,
+               ROUND(SUM(po.total_gold_wt)::numeric, 1) AS gold_wt_gm
+        FROM purchase_order po
+        WHERE po.total_gold_wt IS NOT NULL
+        GROUP BY month ORDER BY month LIMIT 24""",
+        "Month", "Gold Weight (gm)", "oranges",
+        "Tracks the volume of gold raw material procured each month.",
+    ),
+    _chart(
+        "fb_v6", "PO Status Breakdown", "bar",
+        """SELECT po.status AS status, COUNT(po.po_id) AS po_count
+        FROM purchase_order po
+        GROUP BY po.status ORDER BY po_count DESC""",
+        "Status", "PO Count", "gradient",
+        "Volume of purchase orders by status — measures operational procurement throughput.",
     ),
 ]
+
 
 # ── AOV-specific fallback charts ──────────────────────────────────────────
 
@@ -416,13 +420,17 @@ _AOV_CHARTS = [
     ),
     _chart(
         "fb_aov3", "AOV by Product Category", "bar",
-        """SELECT pm.category AS category,
-               ROUND(AVG(so.total_amount)::numeric, 0) AS avg_order_value
-        FROM sales_order so
-        JOIN sales_order_line sol ON so.so_id = sol.so_id
-        JOIN product_master pm ON sol.product_id = pm.product_id
-        WHERE so.status = 'closed'
-        GROUP BY pm.category
+        """WITH order_cats AS (
+               SELECT DISTINCT so.so_id, so.total_amount, pm.category
+               FROM sales_order so
+               JOIN sales_order_line sol ON so.so_id = sol.so_id
+               JOIN product_master pm ON sol.product_id = pm.product_id
+               WHERE so.status = 'closed'
+           )
+        SELECT category,
+               ROUND(AVG(total_amount)::numeric, 0) AS avg_order_value
+        FROM order_cats
+        GROUP BY category
         ORDER BY avg_order_value DESC""",
         "Category", "Avg Order Value (₹)", "purples",
         "Categories commanding higher AOV are where premium SKU investment pays off most.",

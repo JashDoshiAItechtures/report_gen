@@ -223,7 +223,12 @@ def _profile_table(conn, table: str, columns: list[dict]) -> str:
 
 
 def _is_categorical(dtype: str, cname: str) -> bool:
-    """Check if a column is likely categorical (status, type, category, etc.)."""
+    """Check if a column is likely categorical (status, type, category, etc.).
+
+    Only columns whose names contain a known categorical keyword are profiled.
+    Free-form text columns (names, descriptions, addresses, notes) are skipped
+    to avoid unnecessary DB queries on every startup.
+    """
     categorical_types = {"character varying", "text", "varchar", "char", "character"}
     categorical_keywords = {
         "status", "state", "type", "category", "kind", "class",
@@ -232,12 +237,8 @@ def _is_categorical(dtype: str, cname: str) -> bool:
         "gender", "channel", "source", "segment", "department",
     }
     if dtype.lower() in categorical_types:
-        # Check if the column name suggests it's categorical
         lower_name = cname.lower()
-        if any(kw in lower_name for kw in categorical_keywords):
-            return True
-        # Also profile short text columns
-        return True
+        return any(kw in lower_name for kw in categorical_keywords)
     return False
 
 

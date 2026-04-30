@@ -150,7 +150,7 @@ class ModificationPipeline:
         # Detect mention of a specific product SKU (e.g. PROD-0266)
         sku_match = re.search(r"[A-Z]{2,6}-\d{3,6}", question, re.IGNORECASE)
         if sku_match:
-            sku = sku_match.group(0).upper()
+            sku = sku_match.group(0).upper().replace("'", "''")
             res = execute_sql(
                 f"SELECT product_id, product_name, selling_price "
                 f"FROM product_variant pv "

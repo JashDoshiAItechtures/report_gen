@@ -1,3 +1,4 @@
+
 /* ═══════════════════════════════════════════════════════════════════════════
    AI SQL Analyst — Enterprise Report Viewer (New Tab)
    Renders filter bar, KPIs, charts (Chart.js), data tables, insights.
@@ -65,12 +66,12 @@
 
     // ── Color Palettes ────────────────────────────────────────────────────
     const PALETTES = {
-        blues:   ["#3b82f6","#2563eb","#1d4ed8","#60a5fa","#93c5fd","#1e40af"],
-        greens:  ["#10b981","#059669","#047857","#34d399","#6ee7b7","#065f46"],
-        purples: ["#8b5cf6","#7c3aed","#6d28d9","#a78bfa","#c4b5fd","#5b21b6"],
-        oranges: ["#f59e0b","#d97706","#b45309","#fbbf24","#fcd34d","#92400e"],
-        mixed:   ["#10b981","#3b82f6","#8b5cf6","#f59e0b","#f43f5e","#06b6d4","#6366f1","#ec4899","#14b8a6","#a855f7","#eab308","#ef4444","#22c55e","#0ea5e9","#d946ef"],
-        gradient:["#6366f1","#8b5cf6","#a855f7","#c084fc","#d8b4fe","#7c3aed"],
+        blues: ["#3b82f6", "#2563eb", "#1d4ed8", "#60a5fa", "#93c5fd", "#1e40af"],
+        greens: ["#10b981", "#059669", "#047857", "#34d399", "#6ee7b7", "#065f46"],
+        purples: ["#8b5cf6", "#7c3aed", "#6d28d9", "#a78bfa", "#c4b5fd", "#5b21b6"],
+        oranges: ["#f59e0b", "#d97706", "#b45309", "#fbbf24", "#fcd34d", "#92400e"],
+        mixed: ["#10b981", "#3b82f6", "#8b5cf6", "#f59e0b", "#f43f5e", "#06b6d4", "#6366f1", "#ec4899", "#14b8a6", "#a855f7", "#eab308", "#ef4444", "#22c55e", "#0ea5e9", "#d946ef"],
+        gradient: ["#6366f1", "#8b5cf6", "#a855f7", "#c084fc", "#d8b4fe", "#7c3aed"],
     };
     const DEFAULT_COLORS = PALETTES.mixed;
     const ALPHA = "33";
@@ -254,15 +255,15 @@
             charts.forEach((chart, idx) => {
                 const isWide = shouldBeWide[idx];
                 const chartTypeBadge = (chart.type || "bar")
-                    .replace("horizontalBar","H.BAR").replace("stackedBar","STACKED")
-                    .replace("doughnut","DONUT").toUpperCase();
+                    .replace("horizontalBar", "H.BAR").replace("stackedBar", "STACKED")
+                    .replace("doughnut", "DONUT").toUpperCase();
                 const chartInsight = chart.chart_insight || (chart.explanation && chart.explanation.insight) || "";
 
                 const expl = {
-                    what:    (chart.explanation && chart.explanation.what)    || chart.title || "",
-                    how:     (chart.explanation && chart.explanation.how)     || `${chartTypeBadge} chart — data grouped and aggregated from the database.`,
+                    what: (chart.explanation && chart.explanation.what) || chart.title || "",
+                    how: (chart.explanation && chart.explanation.how) || `${chartTypeBadge} chart — data grouped and aggregated from the database.`,
                     insight: (chart.explanation && chart.explanation.insight) || chart.chart_insight || "",
-                    type:    chart.type || "bar",
+                    type: chart.type || "bar",
                 };
 
                 const funnelSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`;
@@ -318,11 +319,11 @@
         const insights = report.insights || [];
         if (insights.length > 0) {
             const insightIcons = {
-                positive:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>`,
-                negative:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>`,
-                warning:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+                positive: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>`,
+                negative: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>`,
+                warning: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
                 opportunity: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
-                neutral:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
+                neutral: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
             };
             html += `<div class="report-section-label label-insights stream-section">
                 <div class="report-section-label-icon">
@@ -523,7 +524,7 @@
                 // Destroy existing charts
                 try {
                     Object.values(Chart.instances).forEach(inst => inst.destroy());
-                } catch (_) {}
+                } catch (_) { }
 
                 // Save current filter values before re-render wipes them
                 const savedFilters = { ...filters };
@@ -594,7 +595,7 @@
             currentReport = JSON.parse(JSON.stringify(originalReport));
             try {
                 Object.values(Chart.instances).forEach(inst => inst.destroy());
-            } catch (_) {}
+            } catch (_) { }
             renderReport(currentReport);
         }
 
@@ -603,271 +604,461 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  PER-CHART LOCAL FILTER SYSTEM
+    //  PER-CHART LOCAL FILTER SYSTEM  — v2
     // ═══════════════════════════════════════════════════════════════════════
 
     // ── Date range quick-pill helpers ─────────────────────────────────────
     function _dateQuickRange(preset) {
         const today = new Date();
-        const y = today.getFullYear();
-        const m = today.getMonth(); // 0-based
-        const d = today.getDate();
-
-        let from, to;
-        to = today.toISOString().slice(0, 10);
-
-        if (preset === "MTD") {
-            from = new Date(y, m, 1).toISOString().slice(0, 10);
-        } else if (preset === "QTD") {
-            const qStart = Math.floor(m / 3) * 3;
-            from = new Date(y, qStart, 1).toISOString().slice(0, 10);
-        } else if (preset === "YTD") {
-            from = new Date(y, 0, 1).toISOString().slice(0, 10);
-        } else {
-            return null; // Custom — don't auto-fill
-        }
+        const y = today.getFullYear(), m = today.getMonth();
+        let from;
+        const to = today.toISOString().slice(0, 10);
+        if (preset === "MTD") from = new Date(y, m, 1).toISOString().slice(0, 10);
+        else if (preset === "QTD") from = new Date(y, Math.floor(m / 3) * 3, 1).toISOString().slice(0, 10);
+        else if (preset === "YTD") from = new Date(y, 0, 1).toISOString().slice(0, 10);
+        else return null;
         return { from, to };
     }
 
-    // ── Open (or close) the filter panel for a chart ──────────────────────
-    // Panel attaches to document.body with position:fixed to escape
-    // .charts-grid's overflow:hidden clipping.
-    async function openChartFilterPanel(idx, anchorBtn) {
-        // Close any other open panel
-        if (activePanelIdx !== null && activePanelIdx !== idx) {
-            closeChartFilterPanel(activePanelIdx);
+    // ── Determine which filters are relevant for this chart ───────────────
+    // Returns a smart config object — single source of truth for panel builder
+    function _getChartFilterConfig(idx) {
+        const spec = chartSpecs[idx] || {};
+        const sql = (spec.sql || "").toLowerCase();
+        const cType = (spec.type || "bar").toLowerCase();
+        const data = spec.data || [];
+        const colNames = data.length > 0
+            ? Object.keys(data[0]).map(c => c.toLowerCase()) : [];
+
+        const isTimeSeries = ["line", "area"].includes(cType);
+        const isRanking = ["bar", "horizontalbar"].includes(cType);
+        const isShare = ["doughnut", "pie"].includes(cType);
+        const isStacked = cType === "stackedbar";
+
+        // ── Extract actual data labels (first column = dimension) ──────────
+        const labelKey = data.length > 0 ? Object.keys(data[0])[0] : null;
+        const rawLabels = labelKey ? data.map(r => String(r[labelKey] ?? "")) : [];
+
+        // Detect date-like labels — skip dim-chips for time-series charts
+        const DATE_PATS = [/^\d{4}-\d{2}/, /^\d{4}$/, /^Q[1-4]/i,
+            /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i];
+        const labelsAreDates = rawLabels.length > 0 &&
+            rawLabels.slice(0, 4).filter(l => DATE_PATS.some(p => p.test(l.trim()))).length >= 2;
+
+        // ── Smart dimension chips — actual data values as interactive filter ─
+        // Shown for categorical (non-date) bar/pie/stacked charts with ≤20 labels
+        const showDimChips = !labelsAreDates && rawLabels.length >= 2 && rawLabels.length <= 20
+            && (isRanking || isShare || isStacked);
+        const dimChips = showDimChips ? rawLabels : [];
+        const labelDimName = labelKey
+            ? labelKey.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+            : "Dimension";
+
+        // ── Date range ────────────────────────────────────────────────────
+        const hasDateCol = colNames.some(c => /date|month|year|quarter|week|period/.test(c));
+        const sqlDate = /order_date|sales_order|created_at/.test(sql);
+        const showDate = isTimeSeries || isStacked || hasDateCol || sqlDate;
+
+        // ── Category / Product / Status — server-side, only when dim-chips absent ─
+        const sqlCat = /category|product_master/.test(sql);
+        const colCat = colNames.some(c => /category|type/.test(c));
+        const showCategory = !showDimChips && (sqlCat || colCat) &&
+            !!(cachedFilterOptions.categories && cachedFilterOptions.categories.length);
+
+        const sqlProd = /product_name|product_master/.test(sql);
+        const colProd = colNames.some(c => /product/.test(c));
+        const showProduct = !showDimChips && (sqlProd || colProd) &&
+            !!(cachedFilterOptions.products && cachedFilterOptions.products.length);
+
+        const sqlStatus = !isTimeSeries && (/\.status\b/.test(sql) || /\bstatus\b/.test(sql));
+        const colStatus = !isTimeSeries && colNames.some(c => c === "status");
+        const showStatus = !showDimChips && (sqlStatus || colStatus) &&
+            !!(cachedFilterOptions.statuses && cachedFilterOptions.statuses.length);
+
+        // ── Top N: only for non-time-series charts with >4 items ──────────
+        const showTopN = !isTimeSeries && (isRanking || isShare || isStacked) && rawLabels.length > 4;
+        const topNOpts = showTopN ? [5, 10, 20] : [];
+
+        // ── Sort order: for ranking/share charts ──────────────────────────
+        const showSort = (isRanking || isShare) && rawLabels.length > 2;
+
+        // ── Compatible chart types for switcher ───────────────────────────
+        const numRows = data.length;
+        const numCols = data.length > 0 ? Object.keys(data[0]).length : 0;
+        const compatTypes = [
+            { type: "bar", label: "Bar" },
+            { type: "horizontalBar", label: "H.Bar" },
+        ];
+        if (numRows <= 12) {
+            compatTypes.push({ type: "pie", label: "Pie" });
+            compatTypes.push({ type: "doughnut", label: "Donut" });
+        }
+        compatTypes.push({ type: "line", label: "Line" });
+        compatTypes.push({ type: "area", label: "Area" });
+        if (numCols >= 3) compatTypes.push({ type: "stackedBar", label: "Stacked" });
+
+        return {
+            isTimeSeries, isRanking, isShare, isStacked, labelsAreDates,
+            showDate, showDimChips, dimChips, labelKey, labelDimName,
+            showCategory, showProduct, showStatus,
+            showTopN, topNOpts, showSort, compatTypes,
+        };
+    }
+
+    // ── Shared helper: destroy old chart, recreate canvas, render or show no-data ─
+    function renderChartOrNoData(idx, dataRows) {
+        const spec = chartSpecs[idx];
+        const chartBody = document.getElementById(`chart-body-${idx}`);
+        if (!spec || !chartBody) return;
+
+        // Remove any existing no-data overlay
+        chartBody.querySelector(".chart-no-data")?.remove();
+
+        // Destroy old Chart.js instance
+        if (chartInstances[idx]) {
+            try { chartInstances[idx].destroy(); } catch (_) { }
+            delete chartInstances[idx];
         }
 
-        const existingPanel = document.getElementById(`cfp-${idx}`);
-        if (existingPanel) {
-            closeChartFilterPanel(idx);
+        // Remove old canvas
+        chartBody.querySelector(`#chart_${idx}`)?.remove();
+
+        if (!dataRows || dataRows.length === 0) {
+            const nd = document.createElement("div");
+            nd.className = "chart-no-data";
+            nd.innerHTML = `
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                </svg>
+                <div class="chart-no-data-text">No data for selected filters</div>
+                <div class="chart-no-data-sub">Try changing or resetting your filters</div>
+            `;
+            chartBody.appendChild(nd);
             return;
         }
 
+        // Recreate canvas fresh (Chart.js requires this after destroy)
+        const canvas = document.createElement("canvas");
+        canvas.id = `chart_${idx}`;
+        chartBody.appendChild(canvas);
+
+        // Apply chart type override from active filter state
+        const activeFilters = chartFilters[idx] || {};
+        const effectiveSpec = activeFilters.chart_type
+            ? { ...spec, type: activeFilters.chart_type }
+            : spec;
+
+        // Sync the type badge in the card header
+        const badgeEl = document.querySelector(`[data-chart-idx="${idx}"] .chart-type-badge`);
+        if (badgeEl) {
+            const dt = (effectiveSpec.type || "bar")
+                .replace("horizontalBar", "H.BAR").replace("stackedBar", "STACKED")
+                .replace("doughnut", "DONUT").toUpperCase();
+            badgeEl.textContent = dt;
+        }
+
+        try {
+            const inst = renderChart(canvas, { ...effectiveSpec, data: dataRows });
+            if (inst) chartInstances[idx] = inst;
+        } catch (err) {
+            console.error("Chart re-render failed:", err);
+        }
+    }
+
+    // ── Call /report/apply-chart-filter with current filter state ─────────
+    // ── Client-side result cache (keyed on sql+filters hash) ─────────────
+    const _filterCache = new Map();         // cacheKey → data[]
+    const _CACHE_MAX = 40;                // evict oldest when full
+    const _inflightCtrls = {};               // idx → AbortController
+
+    function _filterCacheKey(sql, filters) {
+        return JSON.stringify({
+            sql,
+            df: filters.date_from || "",
+            dt: filters.date_to || "",
+            ca: filters.category || "",
+            pr: filters.product || "",
+            st: filters.status || "",
+            tn: filters.top_n || 0,
+        });
+    }
+
+    async function _fetchFilteredData(idx, filters) {
+        const spec = chartSpecs[idx];
+        if (!spec || !spec.sql) return null;
+
+        const cacheKey = _filterCacheKey(spec.sql, filters);
+
+        // ── Cache hit — return instantly ────────────────────────────────
+        if (_filterCache.has(cacheKey)) {
+            return _filterCache.get(cacheKey);
+        }
+
+        // ── Abort any previous in-flight request for this chart ─────────
+        if (_inflightCtrls[idx]) {
+            try { _inflightCtrls[idx].abort(); } catch (_) { }
+        }
+        const ctrl = new AbortController();
+        _inflightCtrls[idx] = ctrl;
+
+        try {
+            const res = await fetch("/report/apply-chart-filter", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                signal: ctrl.signal,
+                body: JSON.stringify({
+                    sql: spec.sql,
+                    date_from: filters.date_from || null,
+                    date_to: filters.date_to || null,
+                    category: filters.category || null,
+                    product: filters.product || null,
+                    status: filters.status || null,
+                    top_n: filters.top_n || null,
+                    compare_lm: false,
+                    compare_ly: false,
+                    provider: localStorage.getItem(reportId + "_provider") || "groq",
+                }),
+            });
+
+            if (!res.ok) return null;
+            const result = await res.json();
+            if (result.error) return null;
+
+            // ── Store in cache ──────────────────────────────────────────
+            if (_filterCache.size >= _CACHE_MAX) {
+                // Evict the oldest entry
+                _filterCache.delete(_filterCache.keys().next().value);
+            }
+            _filterCache.set(cacheKey, result.data);
+            return result.data;
+
+        } catch (err) {
+            if (err.name === "AbortError") return null;   // intentionally cancelled
+            console.error("Filter fetch failed:", err);
+            return null;
+        } finally {
+            if (_inflightCtrls[idx] === ctrl) delete _inflightCtrls[idx];
+        }
+    }
+
+
+    // ── Show / hide loading spinner on a chart ────────────────────────────
+    function _showChartSpinner(idx) {
+        const chartBody = document.getElementById(`chart-body-${idx}`);
+        if (!chartBody || document.getElementById(`cfp-spinner-${idx}`)) return;
+        const ov = document.createElement("div");
+        ov.className = "chart-loading-overlay";
+        ov.id = `cfp-spinner-${idx}`;
+        ov.innerHTML = `<div class="chart-loading-spinner"></div>`;
+        chartBody.appendChild(ov);
+    }
+    function _hideChartSpinner(idx) {
+        document.getElementById(`cfp-spinner-${idx}`)?.remove();
+    }
+
+    // ── Open (or toggle-close) the filter panel for chart idx ────────────
+    // Attaches to document.body with position:fixed to escape overflow:hidden
+    const _applyDebounce = {};
+    async function openChartFilterPanel(idx, anchorBtn) {
+        // Toggle close if already open
+        if (activePanelIdx === idx) { closeChartFilterPanel(idx); return; }
+        if (activePanelIdx !== null) closeChartFilterPanel(activePanelIdx);
         activePanelIdx = idx;
 
-        // ── Ensure filter options are loaded ──────────────────────────────
+        // Load filter options once from server
         if (!cachedFilterOptions || !Object.keys(cachedFilterOptions).length) {
             try {
                 const res = await fetch("/report/filters");
                 if (res.ok) cachedFilterOptions = await res.json();
-            } catch (_) {}
+            } catch (_) { }
         }
 
         const filters = chartFilters[idx] || {};
         const opts = cachedFilterOptions || {};
+        const cfg = _getChartFilterConfig(idx);
+        const spec = chartSpecs[idx] || {};
         const activePreset = filters._datePreset || "";
 
-        // ── Build panel ───────────────────────────────────────────────────
+        // ── Build panel DOM ───────────────────────────────────────────────
         const panel = document.createElement("div");
         panel.className = "chart-filter-panel";
         panel.id = `cfp-${idx}`;
         panel.setAttribute("data-chart-idx", idx);
         panel.style.position = "fixed";
-        panel.style.zIndex   = "99999";
+        panel.style.zIndex = "99999";
 
-        // ── Determine which filters are relevant for THIS chart ──────────
-        const spec = chartSpecs[idx] || {};
-        const sql  = (spec.sql || "").toLowerCase();
-        const cType = (spec.type || "bar").toLowerCase();
-        const colNames = (spec.data && spec.data[0]) ? Object.keys(spec.data[0]).map(c => c.toLowerCase()) : [];
-        const chartTitle = (spec.title || "").toLowerCase();
+        // Sections builder
+        let sections = "";
 
-        // Date Range: show for time-series OR queries touching sales_order / order_date
-        const isTimeSeries = ["line", "area"].includes(cType);
-        const hasDateCol = colNames.some(c => /date|month|year|quarter|week|period/.test(c));
-        const sqlHasDate = /order_date|sales_order/.test(sql);
-        const showDate = isTimeSeries || hasDateCol || sqlHasDate;
-
-        // Category: show only if SQL or columns reference category
-        const sqlHasCategory = /category|product_master/.test(sql);
-        const colHasCategory = colNames.some(c => /category|type/.test(c));
-        const showCategory = (sqlHasCategory || colHasCategory) && opts.categories && opts.categories.length;
-
-        // Product: show only if SQL or columns reference product
-        const sqlHasProduct = /product_name|product_master/.test(sql);
-        const colHasProduct = colNames.some(c => /product/.test(c));
-        const showProduct = (sqlHasProduct || colHasProduct) && opts.products && opts.products.length;
-
-        // Status: show only if SQL or columns reference status
-        const sqlHasStatus = /\.status\b/.test(sql);
-        const colHasStatus = colNames.some(c => /status/.test(c));
-        const showStatus = (sqlHasStatus || colHasStatus) && opts.statuses && opts.statuses.length;
-
-        // Top N: show for ranking charts (bar, horizontalBar, doughnut, pie), NOT for time-series
-        const showTopN = !isTimeSeries && ["bar", "horizontalbar", "doughnut", "pie", "radar"].includes(cType);
-
-        // Compare (vs LM/LY): show for time-series or date-based charts
-        const showCompare = showDate;
-
-        // ── Build only the relevant filter sections ──────────────────────
-        let panelBody = "";
-
-        // Date Range
-        if (showDate) {
-            panelBody += `
-            <div class="cfp-row">
-                <div class="cfp-row-label">Date Range</div>
-                <div class="cfp-pills">
-                    <button class="cfp-pill${activePreset==="MTD"?" active":""}" data-preset="MTD">MTD</button>
-                    <button class="cfp-pill${activePreset==="QTD"?" active":""}" data-preset="QTD">QTD</button>
-                    <button class="cfp-pill${activePreset==="YTD"?" active":""}" data-preset="YTD">YTD</button>
-                    <button class="cfp-pill${activePreset==="Custom"?" active":""}" data-preset="Custom">Custom</button>
+        // ── DATE RANGE section ────────────────────────────────────────────
+        if (cfg.showDate) {
+            sections += `
+            <div class="cfp-section">
+                <div class="cfp-label">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/>
+                        <line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+                    </svg>
+                    Date Range
                 </div>
-                <div class="cfp-date-range" id="cfp-custom-date-${idx}" style="${activePreset!=="Custom"?"display:none":"display:flex"}">
-                    <input type="date" class="cfp-date-input" id="cfp-from-${idx}" value="${filters.date_from||""}" placeholder="From">
-                    <span class="cfp-date-sep">–</span>
-                    <input type="date" class="cfp-date-input" id="cfp-to-${idx}" value="${filters.date_to||""}" placeholder="To">
+                <div class="cfp-pills">
+                    <button class="cfp-pill${activePreset === "MTD" ? " active" : ""}" data-preset="MTD">MTD</button>
+                    <button class="cfp-pill${activePreset === "QTD" ? " active" : ""}" data-preset="QTD">QTD</button>
+                    <button class="cfp-pill${activePreset === "YTD" ? " active" : ""}" data-preset="YTD">YTD</button>
+                    <button class="cfp-pill${activePreset === "Custom" ? " active" : ""}" data-preset="Custom">Custom</button>
+                </div>
+                <div class="cfp-date-row" id="cfp-date-row-${idx}" style="${activePreset !== "Custom" ? "display:none" : ""}">
+                    <input type="date" class="cfp-date-input" id="cfp-from-${idx}" value="${filters.date_from || ""}" placeholder="From">
+                    <span class="cfp-date-sep">→</span>
+                    <input type="date" class="cfp-date-input" id="cfp-to-${idx}" value="${filters.date_to || ""}" placeholder="To">
                 </div>
             </div>`;
         }
 
-        // Category
-        if (showCategory) {
-            panelBody += `
-            <div class="cfp-row">
-                <div class="cfp-row-label">Category</div>
+        // ── CATEGORY section ──────────────────────────────────────────────
+        if (cfg.showCategory) {
+            sections += `
+            <div class="cfp-section">
+                <div class="cfp-label">Category</div>
                 <select class="cfp-select" id="cfp-cat-${idx}">
                     <option value="">All Categories</option>
-                    ${(opts.categories||[]).map(c => `<option value="${escapeAttr(c)}"${filters.category===c?" selected":""}>${escapeHtml(c)}</option>`).join("")}
+                    ${(opts.categories || []).map(c =>
+                `<option value="${escapeAttr(c)}"${filters.category === c ? " selected" : ""}>${escapeHtml(c)}</option>`
+            ).join("")}
                 </select>
             </div>`;
         }
 
-        // Product
-        if (showProduct) {
-            panelBody += `
-            <div class="cfp-row">
-                <div class="cfp-row-label">Product</div>
+        // ── PRODUCT section ───────────────────────────────────────────────
+        if (cfg.showProduct) {
+            sections += `
+            <div class="cfp-section">
+                <div class="cfp-label">Product</div>
                 <select class="cfp-select" id="cfp-prod-${idx}">
                     <option value="">All Products</option>
-                    ${(opts.products||[]).map(p => `<option value="${escapeAttr(p)}"${filters.product===p?" selected":""}>${escapeHtml(p)}</option>`).join("")}
+                    ${(opts.products || []).map(p =>
+                `<option value="${escapeAttr(p)}"${filters.product === p ? " selected" : ""}>${escapeHtml(p)}</option>`
+            ).join("")}
                 </select>
             </div>`;
         }
 
-        // Status
-        if (showStatus) {
-            panelBody += `
-            <div class="cfp-row">
-                <div class="cfp-row-label">Status</div>
+        // ── STATUS section ────────────────────────────────────────────────
+        if (cfg.showStatus) {
+            sections += `
+            <div class="cfp-section">
+                <div class="cfp-label">Status</div>
                 <select class="cfp-select" id="cfp-status-${idx}">
                     <option value="">All Statuses</option>
-                    ${(opts.statuses||[]).map(s => `<option value="${escapeAttr(s)}"${filters.status===s?" selected":""}>${escapeHtml(s)}</option>`).join("")}
+                    ${(opts.statuses || []).map(s =>
+                `<option value="${escapeAttr(s)}"${filters.status === s ? " selected" : ""}>${escapeHtml(s)}</option>`
+            ).join("")}
                 </select>
             </div>`;
         }
 
-        // Top N
-        if (showTopN) {
-            panelBody += `
-            <div class="cfp-row">
-                <div class="cfp-row-label">Show Top</div>
-                <div class="cfp-toggle-row">
-                    <button class="cfp-toggle${!filters.top_n?" active":""}" data-topn="0">All</button>
-                    <button class="cfp-toggle${filters.top_n===5?" active":""}" data-topn="5">Top 5</button>
-                    <button class="cfp-toggle${filters.top_n===10?" active":""}" data-topn="10">Top 10</button>
+        // ── TOP N section ─────────────────────────────────────────────────
+        if (cfg.showTopN) {
+            sections += `
+            <div class="cfp-section">
+                <div class="cfp-label">Show Top</div>
+                <div class="cfp-chips">
+                    <button class="cfp-chip${!filters.top_n ? " active" : ""}" data-topn="0">All</button>
+                    ${cfg.topNOpts.map(n =>
+                `<button class="cfp-chip${filters.top_n === n ? " active" : ""}" data-topn="${n}">Top ${n}</button>`
+            ).join("")}
                 </div>
             </div>`;
         }
 
-        // Compare
-        if (showCompare) {
-            panelBody += `
-            <div class="cfp-row">
-                <div class="cfp-row-label">Compare</div>
-                <div class="cfp-toggle-row">
-                    <button class="cfp-toggle${filters.compare_lm?" active":""}" data-compare="lm">vs Last Month</button>
-                    <button class="cfp-toggle${filters.compare_ly?" active":""}" data-compare="ly">vs Last Year</button>
-                </div>
-            </div>`;
-        }
+        // Compare section removed — not needed
 
         panel.innerHTML = `
             <div class="cfp-header">
                 <div class="cfp-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                    </svg>
                     Chart Filters
+                    ${spec.title ? `<span style="font-weight:500;opacity:0.55;font-size:0.6rem">— ${escapeHtml(spec.title)}</span>` : ""}
                 </div>
                 <button class="cfp-close" title="Close">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
                 </button>
             </div>
-            ${panelBody}
+            <div class="cfp-body">${sections}</div>
             <div class="cfp-footer">
-                <button class="cfp-apply-btn" id="cfp-apply-${idx}">Apply</button>
+                <button class="cfp-apply-btn" id="cfp-apply-${idx}">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                        <polyline points="13 4 6 11 3 8"/>
+                    </svg>
+                    Apply Filters
+                </button>
                 <button class="cfp-reset-btn" id="cfp-reset-${idx}">Reset</button>
             </div>
         `;
 
-
-        // Append to body — escapes overflow:hidden on .charts-grid
         document.body.appendChild(panel);
 
-        // ── Position: anchor below the filter button (viewport-relative) ──
+        // ── Viewport-aware positioning ────────────────────────────────────
         function positionPanel() {
-            const rect   = anchorBtn.getBoundingClientRect();
-            const panelW = 292;
-            const vw     = window.innerWidth;
-            const vh     = window.innerHeight;
-
+            if (window.innerWidth <= 600) return; // mobile: CSS handles it
+            const rect = anchorBtn.getBoundingClientRect();
+            const panelW = 320;
+            const vw = window.innerWidth, vh = window.innerHeight;
             let left = rect.right - panelW;
-            if (left < 8)       left = 8;
+            if (left < 8) left = 8;
             if (left + panelW > vw - 8) left = vw - panelW - 8;
-
-            let top = rect.bottom + 6;
-            // If the panel would go off the bottom, show above the button
-            const estPanelH = 420;  // approximate panel height
-            if (top + estPanelH > vh - 8) top = rect.top - estPanelH - 6;
+            let top = rect.bottom + 8;
+            const estH = Math.min(panel.scrollHeight || 480, vh - 80);
+            if (top + estH > vh - 8) top = rect.top - estH - 8;
             if (top < 8) top = 8;
-
-            panel.style.top   = top     + "px";
-            panel.style.left  = left    + "px";
-            panel.style.right = "auto";
-            panel.style.width = panelW  + "px";
+            panel.style.top = top + "px";
+            panel.style.left = left + "px";
+            panel.style.width = panelW + "px";
         }
-        positionPanel();
+        // Wait one frame so panel has rendered dimensions
+        requestAnimationFrame(positionPanel);
 
-        // Reposition on scroll/resize
-        const _reposition = () => positionPanel();
-        window.addEventListener("scroll", _reposition, true);
-        window.addEventListener("resize", _reposition);
+        const _repos = () => positionPanel();
+        window.addEventListener("scroll", _repos, true);
+        window.addEventListener("resize", _repos);
         panel._cleanup = () => {
-            window.removeEventListener("scroll", _reposition, true);
-            window.removeEventListener("resize", _reposition);
+            window.removeEventListener("scroll", _repos, true);
+            window.removeEventListener("resize", _repos);
         };
 
-        // ── Wire panel events ─────────────────────────────────────────────
-
-        // Close
-        panel.querySelector(".cfp-close").addEventListener("click", (e) => {
+        // ── Wire events ───────────────────────────────────────────────────
+        panel.querySelector(".cfp-close").addEventListener("click", e => {
             e.stopPropagation();
             closeChartFilterPanel(idx);
         });
 
-        // Date preset pills
+        // Preset pills
         panel.querySelectorAll(".cfp-pill").forEach(pill => {
             pill.addEventListener("click", () => {
                 panel.querySelectorAll(".cfp-pill").forEach(p => p.classList.remove("active"));
                 pill.classList.add("active");
                 const preset = pill.dataset.preset;
-                const customRow = document.getElementById(`cfp-custom-date-${idx}`);
+                const dateRow = document.getElementById(`cfp-date-row-${idx}`);
                 if (preset === "Custom") {
-                    if (customRow) customRow.style.display = "flex";
+                    if (dateRow) dateRow.style.display = "";
                 } else {
-                    if (customRow) customRow.style.display = "none";
+                    if (dateRow) dateRow.style.display = "none";
                     const range = _dateQuickRange(preset);
                     if (range) {
                         const fromEl = document.getElementById(`cfp-from-${idx}`);
-                        const toEl   = document.getElementById(`cfp-to-${idx}`);
+                        const toEl = document.getElementById(`cfp-to-${idx}`);
                         if (fromEl) fromEl.value = range.from;
-                        if (toEl)   toEl.value   = range.to;
+                        if (toEl) toEl.value = range.to;
                     }
                 }
             });
         });
 
-        // Top-N toggles (single-select)
+        // Top N chips — single select
         panel.querySelectorAll("[data-topn]").forEach(btn => {
             btn.addEventListener("click", () => {
                 panel.querySelectorAll("[data-topn]").forEach(b => b.classList.remove("active"));
@@ -875,25 +1066,31 @@
             });
         });
 
-        // Compare toggles (multi-select)
-        panel.querySelectorAll("[data-compare]").forEach(btn => {
-            btn.addEventListener("click", () => btn.classList.toggle("active"));
+        // Compare chips removed
+
+        // Apply & Reset buttons
+        document.getElementById(`cfp-apply-${idx}`).addEventListener("click", e => {
+            e.stopPropagation();
+            // Debounce: ignore if a filter is already being applied
+            if (_applyDebounce[idx]) return;
+            _applyDebounce[idx] = true;
+            applyChartFilter(idx).finally(() => {
+                setTimeout(() => { _applyDebounce[idx] = false; }, 500);
+            });
+        });
+        document.getElementById(`cfp-reset-${idx}`).addEventListener("click", e => {
+            e.stopPropagation();
+            resetChartFilter(idx);
         });
 
-        // Apply & Reset
-        document.getElementById(`cfp-apply-${idx}`).addEventListener("click", (e) => { e.stopPropagation(); applyChartFilter(idx); });
-        document.getElementById(`cfp-reset-${idx}`).addEventListener("click", (e) => { e.stopPropagation(); resetChartFilter(idx); });
-
         // Click-outside to close
-        setTimeout(() => {
-            document.addEventListener("click", _globalPanelClose);
-        }, 60);
+        setTimeout(() => { document.addEventListener("click", _globalPanelClose); }, 80);
     }
 
     function _globalPanelClose(e) {
         if (activePanelIdx === null) return;
         const panel = document.getElementById(`cfp-${activePanelIdx}`);
-        const btn   = document.getElementById(`chart-filter-btn-${activePanelIdx}`);
+        const btn = document.getElementById(`chart-filter-btn-${activePanelIdx}`);
         if (panel && !panel.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
             closeChartFilterPanel(activePanelIdx);
         }
@@ -901,180 +1098,86 @@
 
     function closeChartFilterPanel(idx) {
         const panel = document.getElementById(`cfp-${idx}`);
-        if (panel) {
-            if (panel._cleanup) panel._cleanup();
-            panel.remove();
-        }
-        activePanelIdx = null;
+        if (panel) { if (panel._cleanup) panel._cleanup(); panel.remove(); }
+        if (activePanelIdx === idx) activePanelIdx = null;
         document.removeEventListener("click", _globalPanelClose);
     }
 
-
-
-
     // ── Apply the filter panel state to a specific chart ─────────────────
     async function applyChartFilter(idx) {
-
         const panel = document.getElementById(`cfp-${idx}`);
         if (!panel) return;
 
         const applyBtn = document.getElementById(`cfp-apply-${idx}`);
-        if (applyBtn) { applyBtn.textContent = "Loading…"; applyBtn.disabled = true; }
+        if (applyBtn) { applyBtn.innerHTML = `<div class="chart-loading-spinner" style="width:14px;height:14px;border-width:2px"></div> Applying…`; applyBtn.disabled = true; }
 
-        // Read current panel values
+        // ── Read panel state ──────────────────────────────────────────────
         const activePresetEl = panel.querySelector(".cfp-pill.active");
         const activePreset = activePresetEl ? activePresetEl.dataset.preset : "";
 
         const date_from = document.getElementById(`cfp-from-${idx}`)?.value || null;
-        const date_to   = document.getElementById(`cfp-to-${idx}`)?.value   || null;
-        const category  = document.getElementById(`cfp-cat-${idx}`)?.value   || null;
-        const product   = document.getElementById(`cfp-prod-${idx}`)?.value  || null;
-        const status    = document.getElementById(`cfp-status-${idx}`)?.value || null;
+        const date_to = document.getElementById(`cfp-to-${idx}`)?.value || null;
+        const category = document.getElementById(`cfp-cat-${idx}`)?.value || null;
+        const product = document.getElementById(`cfp-prod-${idx}`)?.value || null;
+        const status = document.getElementById(`cfp-status-${idx}`)?.value || null;
 
         const activeTopNEl = panel.querySelector("[data-topn].active");
-        const top_n = activeTopNEl ? parseInt(activeTopNEl.dataset.topn, 10) || null : null;
+        const top_n = activeTopNEl ? (parseInt(activeTopNEl.dataset.topn, 10) || null) : null;
 
-        const compare_lm = panel.querySelector("[data-compare='lm']")?.classList.contains("active") || false;
-        const compare_ly = panel.querySelector("[data-compare='ly']")?.classList.contains("active") || false;
-
-        // Save filter state for badge rendering
+        // Save filter state
         chartFilters[idx] = {
             _datePreset: activePreset,
             date_from: activePreset !== "Custom" ? (date_from || null) : date_from,
-            date_to:   activePreset !== "Custom" ? (date_to   || null) : date_to,
-            category:  category  || null,
-            product:   product   || null,
-            status:    status    || null,
-            top_n:     top_n     || null,
-            compare_lm,
-            compare_ly,
+            date_to: activePreset !== "Custom" ? (date_to || null) : date_to,
+            category: category || null,
+            product: product || null,
+            status: status || null,
+            top_n: top_n || null,
         };
 
-        const spec = chartSpecs[idx];
-        const hasSQLFilter = date_from || date_to || category || product || status || compare_lm || compare_ly;
-
-        // Show spinner in chart body
-        const chartBody = document.getElementById(`chart-body-${idx}`);
-        if (chartBody) {
-            const overlay = document.createElement("div");
-            overlay.className = "chart-loading-overlay";
-            overlay.id = `cfp-spinner-${idx}`;
-            overlay.innerHTML = `<div class="chart-loading-spinner"></div>`;
-            chartBody.appendChild(overlay);
-        }
+        _showChartSpinner(idx);
 
         try {
+            const spec = chartSpecs[idx];
+            const filters = chartFilters[idx];
+            const hasSQLFilter = !!(filters.date_from || filters.date_to || category || product || status);
+
             let newData = null;
 
             if (hasSQLFilter && spec && spec.sql) {
-                // ── Server-side SQL filter ────────────────────────────────
-                const res = await fetch("/report/apply-chart-filter", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        sql: spec.sql,
-                        date_from: date_from || null,
-                        date_to:   date_to   || null,
-                        category:  category  || null,
-                        product:   product   || null,
-                        status:    status    || null,
-                        top_n:     top_n     || null,
-                        compare_lm,
-                        compare_ly,
-                        provider: localStorage.getItem(reportId + "_provider") || "groq",
-                    }),
-                });
-                if (res.ok) {
-                    const result = await res.json();
-                    if (!result.error) {
-                        newData = result.data;
-                    } else {
-                        console.warn(`Chart ${idx} filter error:`, result.error);
-                    }
-                }
+                // ── Server-side SQL + filter injection ────────────────────
+                newData = await _fetchFilteredData(idx, filters);
+                // Fallback: if fetch failed, keep original
+                if (newData === null) newData = JSON.parse(JSON.stringify(chartOriginalData[idx] || []));
             } else {
-                // ── Client-side only (Top N) ──────────────────────────────
+                // ── Client-side only (Top N slicing) ─────────────────────
                 newData = JSON.parse(JSON.stringify(chartOriginalData[idx] || []));
-                if (top_n && newData.length) {
-                    const keys = Object.keys(newData[0]);
-                    if (keys.length >= 2) {
-                        const valKey = keys[1];
-                        try {
-                            newData = newData.sort((a, b) => (parseFloat(b[valKey]||0) - parseFloat(a[valKey]||0))).slice(0, top_n);
-                        } catch(_) { newData = newData.slice(0, top_n); }
-                    }
-                }
             }
 
-            if (newData !== null) {
-                // Destroy old chart instance
-                if (chartInstances[idx]) {
-                    try { chartInstances[idx].destroy(); } catch(_) {}
-                    delete chartInstances[idx];
-                }
-                // Re-create canvas (chart.js needs a fresh canvas after destroy)
-                if (chartBody) {
-                    const oldCanvas = document.getElementById(`chart_${idx}`);
-                    if (oldCanvas) oldCanvas.remove();
-                    const newCanvas = document.createElement("canvas");
-                    newCanvas.id = `chart_${idx}`;
-                    chartBody.appendChild(newCanvas);
-
-                    const updatedSpec = { ...spec, data: newData };
+            // Apply Top N client-side (always, after server data arrives too)
+            if (top_n && top_n > 0 && newData && newData.length > 0) {
+                const keys = Object.keys(newData[0]);
+                if (keys.length >= 2) {
+                    const valKey = keys[1];
                     try {
-                        const inst = renderChart(newCanvas, updatedSpec);
-                        if (inst) chartInstances[idx] = inst;
-                    } catch (err) {
-                        console.error("Chart re-render failed:", err);
-                    }
+                        newData = newData
+                            .slice()
+                            .sort((a, b) => parseFloat(b[valKey] || 0) - parseFloat(a[valKey] || 0))
+                            .slice(0, top_n);
+                    } catch (_) { newData = newData.slice(0, top_n); }
                 }
             }
+
+            _hideChartSpinner(idx);
+            renderChartOrNoData(idx, newData);
+
         } catch (err) {
             console.error("Chart filter apply failed:", err);
-        }
-
-        // Remove spinner
-        const spinner = document.getElementById(`cfp-spinner-${idx}`);
-        if (spinner) spinner.remove();
-
-        if (applyBtn) { applyBtn.textContent = "Apply"; applyBtn.disabled = false; }
-
-        // Update filter button appearance and badges
-        updateChartFilterState(idx);
-
-        // Close panel
-        closeChartFilterPanel(idx);
-    }
-
-    // ── Reset a chart's filters to original data ──────────────────────────
-    function resetChartFilter(idx) {
-        chartFilters[idx] = {};
-
-        const spec = chartSpecs[idx];
-        const originalData = chartOriginalData[idx];
-        if (!spec || !originalData) { closeChartFilterPanel(idx); return; }
-
-        // Destroy old instance
-        if (chartInstances[idx]) {
-            try { chartInstances[idx].destroy(); } catch(_) {}
-            delete chartInstances[idx];
-        }
-
-        // Re-create canvas
-        const chartBody = document.getElementById(`chart-body-${idx}`);
-        if (chartBody) {
-            const oldCanvas = document.getElementById(`chart_${idx}`);
-            if (oldCanvas) oldCanvas.remove();
-            const newCanvas = document.createElement("canvas");
-            newCanvas.id = `chart_${idx}`;
-            chartBody.appendChild(newCanvas);
-
-            const resetSpec = { ...spec, data: JSON.parse(JSON.stringify(originalData)) };
-            try {
-                const inst = renderChart(newCanvas, resetSpec);
-                if (inst) chartInstances[idx] = inst;
-            } catch (err) {
-                console.error("Chart reset re-render failed:", err);
+            _hideChartSpinner(idx);
+        } finally {
+            if (applyBtn) {
+                applyBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="13 4 6 11 3 8"/></svg> Apply Filters`;
+                applyBtn.disabled = false;
             }
         }
 
@@ -1082,62 +1185,61 @@
         closeChartFilterPanel(idx);
     }
 
-    // ── Update filter button highlight and badge strip ────────────────────
+    // ── Reset a chart's filters back to original data ────────────────────
+    function resetChartFilter(idx) {
+        chartFilters[idx] = {};
+        const originalData = chartOriginalData[idx];
+        renderChartOrNoData(idx, originalData ? JSON.parse(JSON.stringify(originalData)) : []);
+        updateChartFilterState(idx);
+        closeChartFilterPanel(idx);
+    }
+
+    // ── Update filter button state and badge strip ────────────────────────
     function updateChartFilterState(idx) {
         const filters = chartFilters[idx] || {};
         const btn = document.getElementById(`chart-filter-btn-${idx}`);
         const badgeContainer = document.getElementById(`chart-badges-${idx}`);
 
         const BADGE_DEFS = [
-            { key: "_datePreset", label: f => f._datePreset ? `Date: ${f._datePreset}` : null },
-            { key: "date_from",   label: f => (f._datePreset === "Custom" && f.date_from) ? `From: ${f.date_from}` : null },
-            { key: "date_to",     label: f => (f._datePreset === "Custom" && f.date_to) ? `To: ${f.date_to}` : null },
-            { key: "category",    label: f => f.category ? `Category: ${f.category}` : null },
-            { key: "product",     label: f => f.product   ? `Product: ${f.product.substring(0,18)}${f.product.length>18?"…":""}` : null },
-            { key: "status",      label: f => f.status    ? `Status: ${f.status}` : null },
-            { key: "top_n",       label: f => f.top_n     ? `Top ${f.top_n}` : null },
-            { key: "compare_lm",  label: f => f.compare_lm ? "vs Last Month" : null },
-            { key: "compare_ly",  label: f => f.compare_ly ? "vs Last Year"  : null },
+            { key: "_datePreset", label: f => f._datePreset ? `📅 ${f._datePreset}` : null },
+            { key: "date_from", label: f => (f._datePreset === "Custom" && f.date_from) ? `From: ${f.date_from}` : null },
+            { key: "date_to", label: f => (f._datePreset === "Custom" && f.date_to) ? `To: ${f.date_to}` : null },
+            { key: "category", label: f => f.category ? `Cat: ${f.category}` : null },
+            { key: "product", label: f => f.product ? `Prod: ${f.product.substring(0, 16)}${f.product.length > 16 ? "…" : ""}` : null },
+            { key: "status", label: f => f.status ? `Status: ${f.status}` : null },
+            { key: "top_n", label: f => f.top_n ? `Top ${f.top_n}` : null },
         ];
 
-        const activeBadges = BADGE_DEFS.map(def => ({
-            key: def.key,
-            label: def.label(filters),
-        })).filter(b => b.label !== null);
-
+        const activeBadges = BADGE_DEFS.map(d => ({ key: d.key, label: d.label(filters) }))
+            .filter(b => b.label !== null);
         const hasFilters = activeBadges.length > 0;
 
-        // Update button state
         if (btn) {
             btn.classList.toggle("has-filters", hasFilters);
-            btn.title = hasFilters ? `${activeBadges.length} filter(s) active` : "Chart Filters";
+            btn.title = hasFilters ? `${activeBadges.length} filter(s) active — click to edit` : "Chart Filters";
         }
 
-        // Render badges
         if (badgeContainer) {
             badgeContainer.innerHTML = activeBadges.map(b => `
                 <span class="chart-filter-badge">
                     ${escapeHtml(b.label)}
-                    <button class="chart-filter-badge-remove" data-chart-idx="${idx}" data-filter-key="${b.key}" title="Remove filter">×</button>
+                    <button class="chart-filter-badge-remove" data-chart-idx="${idx}" data-filter-key="${b.key}" title="Remove">×</button>
                 </span>
             `).join("");
 
-            // Wire badge remove buttons
-            badgeContainer.querySelectorAll(".chart-filter-badge-remove").forEach(removeBtn => {
-                removeBtn.addEventListener("click", (e) => {
+            badgeContainer.querySelectorAll(".chart-filter-badge-remove").forEach(rb => {
+                rb.addEventListener("click", e => {
                     e.stopPropagation();
-                    const filterKey = removeBtn.dataset.filterKey;
-                    removeSingleChartFilter(idx, filterKey);
+                    removeSingleChartFilter(idx, rb.dataset.filterKey);
                 });
             });
         }
     }
 
-    // ── Remove one specific filter from a chart ───────────────────────────
+    // ── Remove a single filter key and re-apply remaining ────────────────
     async function removeSingleChartFilter(idx, filterKey) {
-        const filters = chartFilters[idx] || {};
+        const filters = { ...(chartFilters[idx] || {}) };
 
-        // Clear the relevant filter keys
         if (filterKey === "_datePreset") {
             delete filters._datePreset;
             delete filters.date_from;
@@ -1154,7 +1256,6 @@
 
         chartFilters[idx] = filters;
 
-        // Re-apply remaining filters
         const spec = chartSpecs[idx];
         const originalData = chartOriginalData[idx];
         if (!spec || !originalData) { updateChartFilterState(idx); return; }
@@ -1163,81 +1264,32 @@
         let newData;
 
         if (hasAny && spec.sql) {
-            const showSpinner = () => {
-                const chartBody = document.getElementById(`chart-body-${idx}`);
-                if (chartBody && !document.getElementById(`cfp-spinner-${idx}`)) {
-                    const overlay = document.createElement("div");
-                    overlay.className = "chart-loading-overlay";
-                    overlay.id = `cfp-spinner-${idx}`;
-                    overlay.innerHTML = `<div class="chart-loading-spinner"></div>`;
-                    chartBody.appendChild(overlay);
-                }
-            };
-            showSpinner();
-
+            _showChartSpinner(idx);
             try {
-                const res = await fetch("/report/apply-chart-filter", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        sql: spec.sql,
-                        date_from: filters.date_from || null,
-                        date_to:   filters.date_to   || null,
-                        category:  filters.category  || null,
-                        product:   filters.product   || null,
-                        status:    filters.status    || null,
-                        top_n:     filters.top_n     || null,
-                        compare_lm: !!filters.compare_lm,
-                        compare_ly: !!filters.compare_ly,
-                        provider: localStorage.getItem(reportId + "_provider") || "groq",
-                    }),
-                });
-                if (res.ok) {
-                    const result = await res.json();
-                    newData = result.error ? JSON.parse(JSON.stringify(originalData)) : result.data;
-                }
+                newData = await _fetchFilteredData(idx, filters);
+                if (newData === null) newData = JSON.parse(JSON.stringify(originalData));
             } catch (_) {
                 newData = JSON.parse(JSON.stringify(originalData));
+            } finally {
+                _hideChartSpinner(idx);
             }
-
-            const spinner = document.getElementById(`cfp-spinner-${idx}`);
-            if (spinner) spinner.remove();
         } else {
-            // No active filters — restore original, apply only client-side
             newData = JSON.parse(JSON.stringify(originalData));
-            if (filters.top_n && newData.length) {
-                const keys = Object.keys(newData[0]);
-                if (keys.length >= 2) {
-                    const valKey = keys[1];
-                    try { newData = newData.sort((a,b)=>parseFloat(b[valKey]||0)-parseFloat(a[valKey]||0)).slice(0, filters.top_n); }
-                    catch(_) { newData = newData.slice(0, filters.top_n); }
-                }
+        }
+
+        // Re-apply top_n client-side
+        if (filters.top_n && newData && newData.length > 0) {
+            const keys = Object.keys(newData[0]);
+            if (keys.length >= 2) {
+                const vk = keys[1];
+                try { newData = newData.slice().sort((a, b) => parseFloat(b[vk] || 0) - parseFloat(a[vk] || 0)).slice(0, filters.top_n); }
+                catch (_) { newData = newData.slice(0, filters.top_n); }
             }
         }
 
-        if (newData !== null && newData !== undefined) {
-            if (chartInstances[idx]) {
-                try { chartInstances[idx].destroy(); } catch(_) {}
-                delete chartInstances[idx];
-            }
-            const chartBody = document.getElementById(`chart-body-${idx}`);
-            if (chartBody) {
-                const oldCanvas = document.getElementById(`chart_${idx}`);
-                if (oldCanvas) oldCanvas.remove();
-                const newCanvas = document.createElement("canvas");
-                newCanvas.id = `chart_${idx}`;
-                chartBody.appendChild(newCanvas);
-                const updatedSpec = { ...spec, data: newData };
-                try {
-                    const inst = renderChart(newCanvas, updatedSpec);
-                    if (inst) chartInstances[idx] = inst;
-                } catch (_) {}
-            }
-        }
-
+        renderChartOrNoData(idx, newData);
         updateChartFilterState(idx);
     }
-
     // ── Chart Rendering ───────────────────────────────────────────────────
     function renderChart(canvas, chartSpec) {
 
@@ -1249,7 +1301,13 @@
 
         const labelKey = keys[0];
         const valueKeys = keys.length > 1 ? keys.slice(1) : [keys[0]];
-        const labels = data.map(row => String(row[labelKey]));
+        // Clean labels: replace underscores, truncate long strings for axis
+        const MAX_LABEL = 18;
+        const rawLabels = data.map(row => String(row[labelKey]));
+        const fullLabels = rawLabels.map(l => l.replace(/_/g, ' '));  // clean, not truncated
+        const labels = fullLabels.map(l =>
+            l.length > MAX_LABEL ? l.slice(0, MAX_LABEL - 1) + '\u2026' : l
+        );
         const defaults = getChartDefaults();
         const colors = getColors(chartSpec.color_scheme, Math.max(data.length, valueKeys.length));
 
@@ -1318,20 +1376,8 @@
                     cfg.borderWidth = 0;
                     cfg.hoverBackgroundColor = color + "ee";
                 } else {
-                    // Single-series bars: gradient fill from solid to lighter
-                    cfg.backgroundColor = (ctx) => {
-                        if (!ctx || !ctx.chart || !ctx.chart.chartArea) return color + "cc";
-                        const { top, bottom, left, right } = ctx.chart.chartArea;
-                        const gradient = ctx.chart.ctx.createLinearGradient(
-                            isHorizontal ? left : 0,
-                            isHorizontal ? 0 : top,
-                            isHorizontal ? right : 0,
-                            isHorizontal ? 0 : bottom
-                        );
-                        gradient.addColorStop(0, color + "ee");
-                        gradient.addColorStop(1, color + "55");
-                        return gradient;
-                    };
+                    // Single-series bars: clean solid fill, no heavy gradient
+                    cfg.backgroundColor = color + "d8";
                     cfg.borderColor = color;
                     cfg.borderWidth = 0;
                     cfg.hoverBackgroundColor = color + "ff";
@@ -1339,12 +1385,12 @@
             }
 
             if (isPieType(chartType)) {
-                // Semi-transparent slices with a clean white/dark separator
-                cfg.backgroundColor = colors.slice(0, values.length).map(c => c + "bb");
+                // Vivid opaque slices with a clean separator
+                cfg.backgroundColor = colors.slice(0, values.length).map(c => c + "ee");
                 cfg.borderColor = defaults.bgColor;
-                cfg.borderWidth = 2;
-                cfg.hoverBackgroundColor = colors.slice(0, values.length).map(c => c + "ee");
-                cfg.hoverOffset = 10;
+                cfg.borderWidth = 3;
+                cfg.hoverBackgroundColor = colors.slice(0, values.length).map(c => c + "ff");
+                cfg.hoverOffset = 12;
                 cfg.hoverBorderWidth = 0;
             }
 
@@ -1406,12 +1452,11 @@
                         bodyFont: { family: "'Inter', sans-serif", size: 10 },
                         displayColors: true,
                         callbacks: {
-                            title: function(items) {
-                                if (!items.length) return "";
-                                // For pie/doughnut, show the slice label
-                                if (isPieType(chartType)) return items[0].label || "";
-                                // For bar/line/area, show the x-axis label
-                                return items[0].label || "";
+                            title: function (items) {
+                                if (!items.length) return '';
+                                const i = items[0].dataIndex;
+                                // Prefer full clean label over truncated axis label
+                                return fullLabels[i] || items[0].label || '';
                             },
                             label: function (ctx) {
                                 let val;
@@ -1444,14 +1489,14 @@
             const numFmtCallback = val => {
                 if (typeof val !== "number") return val;
                 if (Math.abs(val) >= 10000000) return (val / 10000000).toFixed(1) + "Cr";
-                if (Math.abs(val) >= 100000)   return (val / 100000).toFixed(1) + "L";
-                if (Math.abs(val) >= 1000)     return (val / 1000).toFixed(1) + "K";
+                if (Math.abs(val) >= 100000) return (val / 100000).toFixed(1) + "L";
+                if (Math.abs(val) >= 1000) return (val / 1000).toFixed(1) + "K";
                 return val;
             };
             // For horizontal bar: x=values (needs number fmt), y=labels (plain text)
             // For all others:     x=labels (plain text),     y=values (needs number fmt)
-            const valueAxisKey  = isHorizontal ? "x" : "y";
-            const labelAxisKey  = isHorizontal ? "y" : "x";
+            const valueAxisKey = isHorizontal ? "x" : "y";
+            const labelAxisKey = isHorizontal ? "y" : "x";
             config.options.scales = {
                 [valueAxisKey]: {
                     grid: { color: defaults.gridColor, drawBorder: false },
@@ -1475,9 +1520,15 @@
                     ticks: {
                         color: defaults.textColor,
                         font: { family: "'Inter'", size: isHorizontal ? 11 : 10, weight: 500 },
-                        maxRotation: isHorizontal ? 0 : 40,
+                        maxRotation: isHorizontal ? 0 : 35,
+                        minRotation: isHorizontal ? 0 : 0,
                         autoSkip: true,
-                        maxTicksLimit: isHorizontal ? 20 : 12,
+                        maxTicksLimit: isHorizontal ? 20 : 10,
+                        callback: function (val, i) {
+                            // Use cleaned label from our labels array
+                            const lbl = this.getLabelForValue ? this.getLabelForValue(val) : labels[i] || val;
+                            return lbl;
+                        },
                     },
                     title: (isHorizontal ? chartSpec.y_label : chartSpec.x_label) ? {
                         display: true,
@@ -1501,9 +1552,12 @@
             };
         }
 
-        // Sync height with CSS: wide cards = 310px, regular = 270px
+        // Height: pie/donut gets more vertical room; wide cards more than regular
         const isWideCard = canvas.closest(".chart-full-width") !== null;
-        canvas.parentElement.style.height = isWideCard ? "310px" : "270px";
+        const isPieChart = isPieType(chartType);
+        canvas.parentElement.style.height = isPieChart
+            ? (isWideCard ? "340px" : "300px")
+            : (isWideCard ? "310px" : "270px");
         return new Chart(canvas, config);
     }
 
@@ -1566,17 +1620,17 @@
         explainTitle.textContent = title;
 
         const icons = {
-            what:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
-            how:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+            what: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+            how: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
             insight: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 01-1 1H9a1 1 0 01-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>`,
-            type:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`,
+            type: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`,
         };
 
         const sections = [
-            { key: "what",    label: "What it shows",  color: "#3b82f6" },
-            { key: "how",     label: "How it's built", color: "#8b5cf6" },
-            { key: "insight", label: "Key insight",    color: "#10b981" },
-            { key: "type",    label: "Chart type",     color: "#f59e0b" },
+            { key: "what", label: "What it shows", color: "#3b82f6" },
+            { key: "how", label: "How it's built", color: "#8b5cf6" },
+            { key: "insight", label: "Key insight", color: "#10b981" },
+            { key: "type", label: "Chart type", color: "#f59e0b" },
         ];
 
         let bodyHtml = `<div style="display:flex;flex-direction:column;gap:1rem;padding:0.15rem 0">`;

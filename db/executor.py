@@ -59,13 +59,13 @@ def execute_sql(sql: str, allow_modification: bool = False) -> dict[str, Any]:
         from ai.validator import validate_sql
         is_safe, reason = validate_sql(sql)
         if not is_safe:
-            return {"success": False, "data": [], "columns": [], "error": reason}
+            return {"success": False, "data": [], "columns": [], "rows_affected": 0, "error": reason}
 
         try:
             with get_engine().connect() as conn:
                 result = conn.execute(text(sql))
                 columns = list(result.keys())
                 rows = [dict(zip(columns, row)) for row in result.fetchall()]
-                return {"success": True, "data": rows, "columns": columns, "error": ""}
+                return {"success": True, "data": rows, "columns": columns, "rows_affected": 0, "error": ""}
         except Exception as exc:
-            return {"success": False, "data": [], "columns": [], "error": str(exc)}
+            return {"success": False, "data": [], "columns": [], "rows_affected": 0, "error": str(exc)}

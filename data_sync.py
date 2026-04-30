@@ -27,13 +27,19 @@ def normalize_column(name: str) -> str:
 
 
 def sync_dataframe(df: pd.DataFrame, table_name: str) -> None:
-    """Write a DataFrame to PostgreSQL, replacing the existing table."""
+    """Write a DataFrame to PostgreSQL, replacing the data but preserving the schema.
+
+    Uses TRUNCATE + append inside a transaction instead of if_exists="replace"
+    so that existing indexes, foreign keys, and constraints are not destroyed.
+    Falls back to if_exists="replace" only when the table does not yet exist.
+    """
     engine = get_engine()
 
     # Normalize columns
     df.columns = [normalize_column(c) for c in df.columns]
 
-    # Deduplicate column names
+    # Deduplicate column names — first occurrence keeps the name,
+    # subsequent duplicates get a _2, _3, ... suffix.
     seen: dict[str, int] = {}
     new_cols: list[str] = []
     for col in df.columns:
@@ -41,11 +47,28 @@ def sync_dataframe(df: pd.DataFrame, table_name: str) -> None:
             seen[col] += 1
             new_cols.append(f"{col}_{seen[col]}")
         else:
-            seen[col] = 0
+            seen[col] = 1
             new_cols.append(col)
     df.columns = new_cols
 
-    df.to_sql(table_name, engine, if_exists="replace", index=False)
+    with engine.begin() as conn:
+        # Check whether the table already exists
+        exists = conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name=:t"
+            ),
+            {"t": table_name},
+        ).fetchone()
+
+        if exists:
+            # Preserve schema — truncate rows only, then append new data
+            conn.execute(text(f'TRUNCATE TABLE "{table_name}" RESTART IDENTITY CASCADE'))
+            df.to_sql(table_name, conn, if_exists="append", index=False)
+        else:
+            # Table doesn't exist yet — safe to create from scratch
+            df.to_sql(table_name, conn, if_exists="replace", index=False)
+
     # Use plain ASCII characters to avoid Windows console encoding issues
     print(f"  Table '{table_name}' synced - {len(df)} rows, {len(df.columns)} columns")
 

@@ -30,7 +30,7 @@ MAX_REPAIR_RETRIES = 2
 
 # ── Modify intent keywords / patterns (checked FIRST — highest priority) ──
 _MODIFY_KEYWORDS = [
-    "update ", "set price", "change price", "change the price", "modify price",
+    "set price", "change price", "change the price", "modify price",
     "delete record", "delete the record", "remove record", "remove the record",
     "insert record", "add record", "add a new", "add new customer", "add new product",
     "update record", "update the record", "change the status", "set the status",
@@ -65,11 +65,9 @@ _EXPORT_KEYWORDS = [
 
 # ── Report intent keywords / patterns ────────────────────────────────────
 _REPORT_KEYWORDS = [
-    # Generic report terms (explicit report-specific, NOT plain queries)
-    "report", "dashboard", "analysis", "trend", "trends",
-    "summary", "comparison", "compare", "insight", "insights",
-    "performance", "overview", "breakdown", "kpi", "kpis",
-    "analytics", "metrics", "statistics",
+    # Explicit report-specific terms (kept as safe single-word triggers)
+    "report", "dashboard", "kpi", "kpis", "analytics",
+    "breakdown",
     # Sales / revenue
     "sales report", "revenue report", "revenue analysis",
     # Operations / order status
@@ -154,7 +152,7 @@ def classify_intent(question: str) -> str:
 _SO_ONLY_COLS = {'status', 'so_id', 'customer_id', 'order_date', 'total_amount',
                  'order_number', 'created_at', 'updated_at'}
 # Columns that belong to sales_order_line (NOT pricing/gold/diamond)
-_SOL_ONLY_COLS = {'product_id', 'variant_sku', 'quantity', 'so_id'}
+_SOL_ONLY_COLS = {'product_id', 'variant_sku', 'quantity'}
 # Sub-tables that are frequently misused as main FROM tables
 _SUB_TABLES = {
     'sales_order_line_pricing': 'solp',
@@ -356,23 +354,7 @@ def _fix_report_sql(sql: str) -> str:
         )
 
     # ══════════════════════════════════════════════════════════════════════
-    # PASS 3: Fix direct sales_order → product_master JOIN (missing
-    #         sales_order_line in between).
-    #         Pattern: JOIN product_master pm ON so.product_id = pm.product_id
-    #         Fix: inject sales_order_line, rewrite JOIN condition
-    # ══════════════════════════════════════════════════════════════════════
-
-    # Detect: JOIN product_master <alias> ON <so_alias>.product_id = <pm_alias>.product_id
-    # where <so_alias> is a sales_order alias (already caught above, but joining might
-    # still reference the wrong table).  After Pass 2, so.product_id is already fixed,
-    # but we still need to ensure the JOIN to product_master goes through sol.
-    # This is already handled by Pass 2 remapping, so no additional action needed
-    # if Pass 2 ran.  But handle the case where the LLM omits sales_order_line entirely
-    # and writes: FROM sales_order so JOIN product_master pm ON so.product_id = pm.product_id
-    # (After Pass 2, this becomes sol.product_id, and the JOIN is already injected.)
-
-    # ══════════════════════════════════════════════════════════════════════
-    # PASS 4: Fix raw product_id / variant_sku used as a chart label column.
+    # PASS 3: Fix raw product_id / variant_sku used as a chart label column.
     #
     # The LLM sometimes writes:
     #   SELECT sol.product_id, SUM(...) AS value FROM ... GROUP BY sol.product_id
@@ -448,169 +430,181 @@ def _fix_report_sql(sql: str) -> str:
 def _inject_filters(sql: str, filters: dict) -> str:
     """Inject WHERE conditions into an existing SQL query for applied filters.
 
-    This is the reliable alternative to asking the LLM to rewrite queries.
-    It modifies the existing (working) SQL by adding/extending WHERE clauses
-    and injecting required JOINs if needed.
-
-    Args:
-        sql: Original SQL query string
-        filters: Dict with keys: date_from, date_to, category, status, customer, product
+    Handles both sales_order (order_date) and purchase_order (created_at)
+    queries with robust alias detection.
     """
     if not sql or not filters:
         return sql
 
-    sql = ' '.join(sql.split())  # normalize whitespace
-    conditions = []
+    sql = ' '.join(sql.split())   # normalise whitespace / newlines
+    conditions: list[str] = []
 
-    # ── Date filters ──────────────────────────────────────────────────
-    # Only apply if the query references sales_order
-    if filters.get('date_from') and re.search(r'\bsales_order\b(?!_)', sql, re.IGNORECASE):
-        # Find the alias for sales_order
-        so_alias_m = re.search(r'\bsales_order\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
-        so_alias = so_alias_m.group(1) if so_alias_m else 'so'
-        conditions.append(f"{so_alias}.order_date >= '{filters['date_from']}'")
+    # ── Helper: extract alias for a table ────────────────────────────────
+    def _alias(table: str) -> str | None:
+        """Return the alias immediately following `table` in the SQL, or None."""
+        m = re.search(
+            rf'\b{re.escape(table)}\b(?!_)\s+(?:AS\s+)?(\w+)',
+            sql, re.IGNORECASE
+        )
+        return m.group(1) if m else None
 
-    if filters.get('date_to') and re.search(r'\bsales_order\b(?!_)', sql, re.IGNORECASE):
-        so_alias_m = re.search(r'\bsales_order\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
-        so_alias = so_alias_m.group(1) if so_alias_m else 'so'
-        conditions.append(f"{so_alias}.order_date <= '{filters['date_to']}'")
+    def _has_table(table: str) -> bool:
+        return bool(re.search(rf'\b{re.escape(table)}\b(?!_)', sql, re.IGNORECASE))
 
-    # ── Status filter ─────────────────────────────────────────────────
-    if filters.get('status') and re.search(r'\bsales_order\b(?!_)', sql, re.IGNORECASE):
-        so_alias_m = re.search(r'\bsales_order\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
-        so_alias = so_alias_m.group(1) if so_alias_m else 'so'
+    # ── Detect query type ─────────────────────────────────────────────────
+    is_sales = _has_table('sales_order')
+    is_po    = _has_table('purchase_order')
+
+    # ── Date filters ──────────────────────────────────────────────────────
+    date_from = filters.get('date_from')
+    date_to   = filters.get('date_to')
+
+    # Sanitize date values — valid ISO dates never contain quotes; strip any that do
+    if date_from:
+        date_from = str(date_from).replace("'", "")
+    if date_to:
+        date_to = str(date_to).replace("'", "")
+
+    if date_from or date_to:
+        if is_sales:
+            so_alias = _alias('sales_order') or 'so'
+            if date_from:
+                conditions.append(f"{so_alias}.order_date >= '{date_from}'")
+            if date_to:
+                conditions.append(f"{so_alias}.order_date <= '{date_to}'")
+        elif is_po:
+            po_alias = _alias('purchase_order') or 'po'
+            if date_from:
+                conditions.append(f"{po_alias}.created_at >= '{date_from}'")
+            if date_to:
+                conditions.append(f"{po_alias}.created_at <= '{date_to}'")
+        # else: no known date column — skip silently
+
+    # ── Status filter ─────────────────────────────────────────────────────
+    if filters.get('status') and is_sales:
+        so_alias  = _alias('sales_order') or 'so'
         status_val = filters['status'].replace("'", "''")
-        # Remove any existing status condition and replace
-        sql = re.sub(
+        # Replace existing status condition in-place
+        new_sql = re.sub(
             rf"\b{re.escape(so_alias)}\.status\s*=\s*'[^']*'",
             f"{so_alias}.status = '{status_val}'",
             sql, flags=re.IGNORECASE
         )
-        # If no existing status condition was replaced, add one
-        if not re.search(rf"\b{re.escape(so_alias)}\.status\s*=", sql, re.IGNORECASE):
+        if new_sql != sql:
+            sql = new_sql   # replaced in-place — do NOT add to conditions
+        else:
             conditions.append(f"{so_alias}.status = '{status_val}'")
 
-    # ── Category filter ───────────────────────────────────────────────
+    # ── Category filter ───────────────────────────────────────────────────
     if filters.get('category'):
-        cat_val = filters['category'].replace("'", "''")
-        # Check if product_master is already in the query
-        pm_match = re.search(r'\bproduct_master\s+(\w+)', sql, re.IGNORECASE)
-        if pm_match:
-            pm_alias = pm_match.group(1)
-        else:
-            # Need to inject the join chain: sales_order_line + product_master
-            pm_alias = 'pm'
-            sol_match = re.search(r'\bsales_order_line\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
-            so_alias_m = re.search(r'\bsales_order\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
+        cat_val  = filters['category'].replace("'", "''")
+        pm_alias = _alias('product_master') or 'pm'
 
-            if sol_match:
-                sol_alias = sol_match.group(1)
-                # sales_order_line exists, just add product_master join
-                sql = re.sub(
-                    r'(\bWHERE\b)',
-                    f'JOIN product_master {pm_alias} ON {sol_alias}.product_id = {pm_alias}.product_id WHERE',
-                    sql, count=1, flags=re.IGNORECASE
-                )
-                if 'WHERE' not in sql.upper():
-                    sql += f' JOIN product_master {pm_alias} ON {sol_alias}.product_id = {pm_alias}.product_id'
-            elif so_alias_m:
-                so_alias = so_alias_m.group(1)
-                sol_alias = 'sol'
-                # Need both sales_order_line and product_master
-                join_clause = (f'JOIN sales_order_line {sol_alias} ON {so_alias}.so_id = {sol_alias}.so_id '
-                               f'JOIN product_master {pm_alias} ON {sol_alias}.product_id = {pm_alias}.product_id')
-                if 'WHERE' in sql.upper():
-                    sql = re.sub(r'(\bWHERE\b)', f'{join_clause} WHERE', sql, count=1, flags=re.IGNORECASE)
+        if not _has_table('product_master'):
+            sol_alias = _alias('sales_order_line') or 'sol'
+            so_alias  = _alias('sales_order') or 'so'
+
+            if _has_table('sales_order_line'):
+                join_frag = (f'JOIN product_master {pm_alias} ON '
+                             f'{sol_alias}.product_id = {pm_alias}.product_id ')
+            elif is_sales:
+                join_frag = (f'JOIN sales_order_line {sol_alias} ON '
+                             f'{so_alias}.so_id = {sol_alias}.so_id '
+                             f'JOIN product_master {pm_alias} ON '
+                             f'{sol_alias}.product_id = {pm_alias}.product_id ')
+            else:
+                join_frag = ''
+
+            if join_frag:
+                if re.search(r'\bWHERE\b', sql, re.IGNORECASE):
+                    sql = re.sub(r'(\bWHERE\b)', join_frag + r'\1',
+                                 sql, count=1, flags=re.IGNORECASE)
                 else:
-                    sql += f' {join_clause}'
+                    for kw in ['GROUP BY', 'ORDER BY', 'LIMIT']:
+                        m = re.search(rf'\b{kw}\b', sql, re.IGNORECASE)
+                        if m:
+                            sql = sql[:m.start()] + join_frag + sql[m.start():]
+                            break
+                    else:
+                        sql += ' ' + join_frag.strip()
 
         conditions.append(f"{pm_alias}.category = '{cat_val}'")
 
-    # ── Product filter ────────────────────────────────────────────────
+    # ── Product filter ────────────────────────────────────────────────────
     if filters.get('product'):
         prod_val = filters['product'].replace("'", "''")
-        pm_match = re.search(r'\bproduct_master\s+(\w+)', sql, re.IGNORECASE)
-        if pm_match:
-            pm_alias = pm_match.group(1)
-        else:
-            # Inject join chain (same logic as category)
-            pm_alias = 'pm'
-            sol_match = re.search(r'\bsales_order_line\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
-            so_alias_m = re.search(r'\bsales_order\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
+        pm_alias = _alias('product_master') or 'pm'
 
-            if sol_match:
-                sol_alias = sol_match.group(1)
-                if 'WHERE' in sql.upper():
-                    sql = re.sub(
-                        r'(\bWHERE\b)',
-                        f'JOIN product_master {pm_alias} ON {sol_alias}.product_id = {pm_alias}.product_id WHERE',
-                        sql, count=1, flags=re.IGNORECASE
-                    )
+        if not _has_table('product_master'):
+            sol_alias = _alias('sales_order_line') or 'sol'
+            so_alias  = _alias('sales_order') or 'so'
+
+            if _has_table('sales_order_line'):
+                join_frag = (f'JOIN product_master {pm_alias} ON '
+                             f'{sol_alias}.product_id = {pm_alias}.product_id ')
+            elif is_sales:
+                join_frag = (f'JOIN sales_order_line {sol_alias} ON '
+                             f'{so_alias}.so_id = {sol_alias}.so_id '
+                             f'JOIN product_master {pm_alias} ON '
+                             f'{sol_alias}.product_id = {pm_alias}.product_id ')
+            else:
+                join_frag = ''
+
+            if join_frag:
+                if re.search(r'\bWHERE\b', sql, re.IGNORECASE):
+                    sql = re.sub(r'(\bWHERE\b)', join_frag + r'\1',
+                                 sql, count=1, flags=re.IGNORECASE)
                 else:
-                    sql += f' JOIN product_master {pm_alias} ON {sol_alias}.product_id = {pm_alias}.product_id'
-            elif so_alias_m:
-                so_alias = so_alias_m.group(1)
-                sol_alias = 'sol'
-                join_clause = (f'JOIN sales_order_line {sol_alias} ON {so_alias}.so_id = {sol_alias}.so_id '
-                               f'JOIN product_master {pm_alias} ON {sol_alias}.product_id = {pm_alias}.product_id')
-                if 'WHERE' in sql.upper():
-                    sql = re.sub(r'(\bWHERE\b)', f'{join_clause} WHERE', sql, count=1, flags=re.IGNORECASE)
-                else:
-                    sql += f' {join_clause}'
+                    for kw in ['GROUP BY', 'ORDER BY', 'LIMIT']:
+                        m = re.search(rf'\b{kw}\b', sql, re.IGNORECASE)
+                        if m:
+                            sql = sql[:m.start()] + join_frag + sql[m.start():]
+                            break
+                    else:
+                        sql += ' ' + join_frag.strip()
 
         conditions.append(f"{pm_alias}.product_name = '{prod_val}'")
 
-    # ── Customer filter ───────────────────────────────────────────────
-    if filters.get('customer'):
+    # ── Customer filter ───────────────────────────────────────────────────
+    if filters.get('customer') and is_sales:
         cust_val = filters['customer'].replace("'", "''")
-        cm_match = re.search(r'\bcustomer_master\s+(\w+)', sql, re.IGNORECASE)
-        if cm_match:
-            cm_alias = cm_match.group(1)
-        else:
-            cm_alias = 'cm'
-            so_alias_m = re.search(r'\bsales_order\b(?!_)\s+(\w+)', sql, re.IGNORECASE)
-            if so_alias_m:
-                so_alias = so_alias_m.group(1)
-                if 'WHERE' in sql.upper():
-                    sql = re.sub(
-                        r'(\bWHERE\b)',
-                        f'JOIN customer_master {cm_alias} ON {so_alias}.customer_id = {cm_alias}.customer_id WHERE',
-                        sql, count=1, flags=re.IGNORECASE
-                    )
-                else:
-                    sql += f' JOIN customer_master {cm_alias} ON {so_alias}.customer_id = {cm_alias}.customer_id'
+        cm_alias = _alias('customer_master') or 'cm'
+
+        if not _has_table('customer_master'):
+            so_alias = _alias('sales_order') or 'so'
+            join_frag = (f'JOIN customer_master {cm_alias} ON '
+                         f'{so_alias}.customer_id = {cm_alias}.customer_id ')
+            if re.search(r'\bWHERE\b', sql, re.IGNORECASE):
+                sql = re.sub(r'(\bWHERE\b)', join_frag + r'\1',
+                             sql, count=1, flags=re.IGNORECASE)
+            else:
+                sql += ' ' + join_frag.strip()
 
         conditions.append(f"{cm_alias}.customer_name = '{cust_val}'")
 
-    # ── Apply collected conditions ────────────────────────────────────
+    # ── Merge conditions into SQL ─────────────────────────────────────────
     if conditions:
         cond_str = ' AND '.join(conditions)
         if re.search(r'\bWHERE\b', sql, re.IGNORECASE):
-            # Find the position right after WHERE and its existing conditions
-            # Insert before GROUP BY / ORDER BY / LIMIT if present
-            for keyword in ['GROUP BY', 'ORDER BY', 'LIMIT', 'HAVING']:
-                pattern = re.compile(rf'\b{keyword}\b', re.IGNORECASE)
-                match = pattern.search(sql)
-                if match:
-                    insert_pos = match.start()
-                    sql = sql[:insert_pos] + f'AND {cond_str} ' + sql[insert_pos:]
+            # Insert before first GROUP BY / ORDER BY / LIMIT / HAVING
+            for kw in ['GROUP BY', 'ORDER BY', 'LIMIT', 'HAVING']:
+                m = re.search(rf'\b{kw}\b', sql, re.IGNORECASE)
+                if m:
+                    sql = sql[:m.start()] + f'AND {cond_str} ' + sql[m.start():]
                     break
             else:
-                # No GROUP BY/ORDER BY/LIMIT — just append
                 sql += f' AND {cond_str}'
         else:
-            # No WHERE clause at all — insert before GROUP BY etc. or append
-            for keyword in ['GROUP BY', 'ORDER BY', 'LIMIT', 'HAVING']:
-                pattern = re.compile(rf'\b{keyword}\b', re.IGNORECASE)
-                match = pattern.search(sql)
-                if match:
-                    insert_pos = match.start()
-                    sql = sql[:insert_pos] + f'WHERE {cond_str} ' + sql[insert_pos:]
+            for kw in ['GROUP BY', 'ORDER BY', 'LIMIT', 'HAVING']:
+                m = re.search(rf'\b{kw}\b', sql, re.IGNORECASE)
+                if m:
+                    sql = sql[:m.start()] + f'WHERE {cond_str} ' + sql[m.start():]
                     break
             else:
                 sql += f' WHERE {cond_str}'
 
     return sql
+
 
 
 # ── Report generation ──────────────────────────────────────────────────────
@@ -772,8 +766,7 @@ class ReportPipeline:
         text = "".join(result)
 
         # ── Pass 2: remove trailing commas before } or ] ───────────────────
-        import re as _re
-        text = _re.sub(r",(\s*[}\]])", r"\1", text)
+        text = re.sub(r",(\s*[}\]])", r"\1", text)
 
         # ── Pass 3: close any truncated JSON ──────────────────────────────
         # Count unmatched { and [
@@ -850,6 +843,66 @@ class ReportPipeline:
 
         return json.loads(repaired)  # let the caller handle any final exception
 
+    @staticmethod
+    def _detect_item_filters(sql: str) -> list:
+        """Return the filter types that are meaningfully applicable to this SQL query.
+
+        Each item (chart, KPI, table) has its own applicable set derived from
+        which tables its SQL references.  This drives per-chart filter controls
+        in the UI and prevents irrelevant filters from being injected.
+
+        Returns a list containing zero or more of:
+          "date_range"  – SQL uses sales_order.order_date or purchase_order.created_at
+          "status"      – SQL references sales_order (has a status column)
+          "category"    – SQL can be filtered by product_master.category
+          "product"     – SQL can be filtered by product_master.product_name
+          "customer"    – SQL can be filtered by customer_master.customer_name
+          "vendor"      – SQL references purchase_order or vendor_master
+        """
+        if not sql:
+            return []
+
+        s = sql.lower()
+
+        def _has(pattern: str) -> bool:
+            return bool(re.search(pattern, s))
+
+        has_sales_order     = _has(r'\bsales_order\b(?!_)')
+        has_sol             = _has(r'\bsales_order_line\b(?!_)')
+        has_purchase_order  = _has(r'\bpurchase_order\b(?!_)')
+        has_product_master  = _has(r'\bproduct_master\b')
+        has_customer_master = _has(r'\bcustomer_master\b')
+        has_vendor_master   = _has(r'\bvendor_master\b')
+        has_order_date      = _has(r'\border_date\b')
+        has_created_at      = _has(r'\bcreated_at\b')
+
+        applicable: list = []
+
+        # Date range — restrict the time window
+        if (has_sales_order and has_order_date) or (has_purchase_order and has_created_at):
+            applicable.append("date_range")
+
+        # Status — filter closed/open/cancelled orders
+        if has_sales_order:
+            applicable.append("status")
+
+        # Category / Product — product_master joined (or SOL present so inject can add join)
+        if has_product_master:
+            applicable.extend(["category", "product"])
+        elif has_sol:
+            # _inject_filters will auto-join product_master via sol.product_id
+            applicable.append("category")
+
+        # Customer — customer_master already joined, or sales_order present (can join)
+        if has_customer_master or has_sales_order:
+            applicable.append("customer")
+
+        # Vendor — purchase_order or vendor_master present
+        if has_vendor_master or has_purchase_order:
+            applicable.append("vendor")
+
+        return applicable
+
     def _execute_kpi_sql(self, kpi: dict) -> dict:
         """Execute a KPI's SQL and populate its value."""
         sql = kpi.get("sql", "")
@@ -860,6 +913,7 @@ class ReportPipeline:
 
         sql, result = self._validate_and_execute_sql(sql, context=f"KPI:{kpi.get('label', kpi.get('id', '?'))}")
         kpi["sql"] = sql  # store corrected SQL
+        kpi["applicable_filters"] = self._detect_item_filters(sql)
 
         if not result["success"]:
             kpi["value"] = "N/A"
@@ -904,6 +958,7 @@ class ReportPipeline:
 
         sql, result = self._validate_and_execute_sql(sql, context=f"Chart:{chart.get('title', chart.get('id', '?'))}")
         chart["sql"] = sql  # store corrected SQL
+        chart["applicable_filters"] = self._detect_item_filters(sql)
 
         if not result["success"]:
             chart["data"] = []
@@ -1076,20 +1131,34 @@ class ReportPipeline:
         validation_agent = ValidationAgent()
 
         # ── Fire all 5 agents in parallel ─────────────────────────────────
-        (
-            kpi_result,
-            chart_result,
-            insight_result,
-            sql_result,
-            validation_result,
-        ) = await asyncio.gather(
+        _agent_names = ("kpi", "chart", "insight", "sql", "validation")
+        _agent_fallbacks = (
+            {"kpis": [], "agent_timing": {"kpi": 0}},
+            {"charts": [], "agent_timing": {"chart": 0}},
+            {"insights": [], "agent_timing": {"insight": 0}},
+            {"agent_timing": {"sql": 0}},
+            {"_validation_controls": {}, "agent_timing": {"validation": 0}},
+        )
+        raw_results = await asyncio.gather(
             kpi_agent.run(blueprint, question),
             chart_agent.run(blueprint, question),
             insight_agent.run(blueprint, question),
             sql_agent.run(blueprint, question),
             validation_agent.run(blueprint, question),
-            return_exceptions=False,
+            return_exceptions=True,
         )
+
+        # Replace any failed agent with its safe fallback so the report
+        # can still be assembled from the remaining agents' data.
+        resolved = []
+        for name, res, fallback in zip(_agent_names, raw_results, _agent_fallbacks):
+            if isinstance(res, Exception):
+                logger.error("Agent '%s' raised an exception: %s", name, res, exc_info=res)
+                resolved.append(fallback)
+            else:
+                resolved.append(res)
+
+        kpi_result, chart_result, insight_result, sql_result, validation_result = resolved
 
         elapsed = time.perf_counter() - t0
         logger.info("Parallel pipeline — all agents finished in %.3fs total", elapsed)
@@ -1160,27 +1229,22 @@ class ReportPipeline:
             }
 
         # ── Step 2: Parallel agent execution ──────────────────────────────
-        # Run the async orchestrator.  We use asyncio.run() when there is no
-        # running event loop (sync context from uvicorn sync worker), or we
-        # get the current loop if one already exists (asyncio endpoint).
+        # asyncio.get_running_loop() raises RuntimeError when called outside
+        # an async context (Python 3.7+, no deprecation warnings unlike
+        # get_event_loop()).  Use that to decide how to drive the coroutine.
+        import concurrent.futures
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're inside an async context — run in thread pool to avoid
-                # nested-loop error (e.g. called from async FastAPI endpoint)
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(
-                        asyncio.run,
-                        self._generate_parallel(blueprint, question),
-                    )
-                    report, agent_timings = future.result()
-            else:
-                report, agent_timings = loop.run_until_complete(
-                    self._generate_parallel(blueprint, question)
+            asyncio.get_running_loop()
+            # Already inside a running event loop (async FastAPI endpoint).
+            # Run asyncio.run() in a fresh thread to avoid a nested-loop error.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    self._generate_parallel(blueprint, question),
                 )
+                report, agent_timings = future.result()
         except RuntimeError:
-            # Fallback: create a brand-new event loop
+            # No running loop — safe to call asyncio.run() directly.
             report, agent_timings = asyncio.run(
                 self._generate_parallel(blueprint, question)
             )
@@ -1473,12 +1537,11 @@ class ReportPipeline:
             r"^Q[1-4]\s?\d{4}$",     # Q1 2024
             r"^\w{3,9}\s?\d{4}$",    # Jan 2024 / January 2024
         ]
-        import re as _re
         is_time_series = False
         if row_count >= 3:
             match_count = sum(
                 1 for lbl in labels[:5]
-                if any(_re.match(p, lbl.strip()) for p in time_patterns)
+                if any(re.match(p, lbl.strip()) for p in time_patterns)
             )
             if match_count >= min(3, len(labels[:5])):
                 is_time_series = True
@@ -1495,7 +1558,7 @@ class ReportPipeline:
         if is_time_series and row_count > 30:
             # Check if labels are daily (YYYY-MM-DD)
             daily_pattern = r"^\d{4}-\d{2}-\d{2}"
-            daily_count = sum(1 for lbl in labels[:10] if _re.match(daily_pattern, lbl.strip()))
+            daily_count = sum(1 for lbl in labels[:10] if re.match(daily_pattern, lbl.strip()))
             if daily_count >= min(5, len(labels[:10])):
                 # Aggregate to monthly
                 from collections import OrderedDict
@@ -1582,222 +1645,231 @@ class ReportPipeline:
 
     @staticmethod
     def _enforce_chart_diversity(charts: list) -> list:
-        """Ensure chart types are appropriate for the data and diverse.
+        """Ensure charts span different visual families — max 2 per family.
 
-        Rules:
-        - Never use polarArea or radar (unreadable with business data)
-        - Time-series data (dates in labels) → line or area
-        - Proportions/shares (≤8 items) → pie or doughnut
-        - Comparisons (>8 items) → horizontalBar
-        - Comparisons (≤8 items) → bar
-        - Trends with multiple series → stackedBar or area
-        - No two charts should use the same type unless necessary
+        Visual families (max 2 combined per family):
+          time_series → line, area
+          bar_family  → bar, horizontalBar
+          circular    → pie, doughnut
+          stacked_bar → stackedBar          (max 1 — it's very distinctive)
+
+        A 6-chart report will therefore always cover at least 3 visual families.
+        Within each family the type that has been used fewest times is preferred,
+        so the first trend chart becomes "line" and the second "area", etc.
         """
-        # Preferred types in order (no polarArea, no radar)
-        GOOD_TYPES = ["bar", "line", "pie", "doughnut", "horizontalBar", "stackedBar", "area"]
+        FAMILY_MAX = 2
+        STACKED_MAX = 1
+
+        TYPE_TO_FAMILY: dict = {
+            "line":         "time_series",
+            "area":         "time_series",
+            "bar":          "bar_family",
+            "horizontalBar":"bar_family",
+            "pie":          "circular",
+            "doughnut":     "circular",
+            "stackedBar":   "stacked_bar",
+        }
+        FAMILY_PREFERRED: dict = {
+            "time_series":  ["line", "area"],
+            "bar_family":   ["bar", "horizontalBar"],
+            "circular":     ["doughnut", "pie"],
+            "stacked_bar":  ["stackedBar"],
+        }
 
         TIME_KEYWORDS = ["trend", "growth", "over time", "monthly", "weekly", "daily",
                          "quarterly", "yearly", "timeline", "history", "date", "period"]
         PROPORTION_KEYWORDS = ["distribution", "share", "breakdown", "composition",
                                "by category", "by type", "proportion", "split", "mix"]
-        COMPARISON_KEYWORDS = ["top", "ranking", "comparison", "versus", "vs",
-                               "best", "worst", "highest", "lowest"]
 
-        def _has_date_labels(chart):
-            """Check if the chart's data labels look like dates."""
+        def _family_max(fam: str) -> int:
+            return STACKED_MAX if fam == "stacked_bar" else FAMILY_MAX
+
+        def _has_date_labels(chart) -> bool:
             data = chart.get("data", [])
             if not data:
                 return False
-            keys = list(data[0].keys())
-            if not keys:
+            label_key = list(data[0].keys())[0] if data[0] else ""
+            if not label_key:
                 return False
-            label_key = keys[0]
-            sample_labels = [str(row.get(label_key, "")) for row in data[:5]]
-            date_patterns = [r"\d{4}-\d{2}", r"\d{2}/\d{2}", r"Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"]
-            import re as _re
-            for label in sample_labels:
-                for pat in date_patterns:
-                    if _re.search(pat, label, _re.IGNORECASE):
+            sample = [str(row.get(label_key, "")) for row in data[:5]]
+            for lbl in sample:
+                for pat in [r"\d{4}-\d{2}", r"\d{2}/\d{2}",
+                             r"Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"]:
+                    if re.search(pat, lbl, re.IGNORECASE):
                         return True
             return False
 
-        def _infer_best_type(chart, used_types):
-            """Pick the best chart type based on title, data shape, and what's used."""
+        def _best_in_family(fam: str, type_counts: dict) -> str:
+            """Pick the least-used type within a family."""
+            candidates = FAMILY_PREFERRED.get(fam, ["bar"])
+            return min(candidates, key=lambda t: type_counts.get(t, 0))
+
+        def _pick_family(chart, family_counts: dict, type_counts: dict) -> str:
+            """Choose the best available family for this chart."""
             title = (chart.get("title") or "").lower()
             data = chart.get("data", [])
             num_rows = len(data)
             num_cols = len(data[0].keys()) if data else 0
 
-            # Time-series → line or area
-            if _has_date_labels(chart) or any(kw in title for kw in TIME_KEYWORDS):
-                for t in ["line", "area"]:
-                    if t not in used_types:
-                        return t
-                return "line"
+            is_time = _has_date_labels(chart) or any(kw in title for kw in TIME_KEYWORDS)
+            is_prop = any(kw in title for kw in PROPORTION_KEYWORDS) and num_rows <= 10
+            is_wide = num_cols >= 3
 
-            # Proportions → pie or doughnut
-            if any(kw in title for kw in PROPORTION_KEYWORDS) and num_rows <= 10:
-                for t in ["pie", "doughnut"]:
-                    if t not in used_types:
-                        return t
-                for t in ["bar", "horizontalBar"]:
-                    if t not in used_types:
-                        return t
-                return "doughnut"
+            if is_time:
+                priority = ["time_series", "bar_family", "stacked_bar", "circular"]
+            elif is_prop:
+                priority = ["circular", "bar_family", "time_series", "stacked_bar"]
+            elif is_wide:
+                priority = ["stacked_bar", "bar_family", "time_series", "circular"]
+            elif num_rows > 8:
+                priority = ["bar_family", "stacked_bar", "circular", "time_series"]
+            else:
+                priority = ["bar_family", "circular", "time_series", "stacked_bar"]
 
-            # Many categories → horizontalBar
-            if num_rows > 8:
-                if "horizontalBar" not in used_types:
-                    return "horizontalBar"
-                if "bar" not in used_types:
-                    return "bar"
+            for fam in priority:
+                if family_counts.get(fam, 0) < _family_max(fam):
+                    return fam
+            return "bar_family"  # last resort
 
-            # Multiple value columns → stackedBar
-            if num_cols >= 3:
-                if "stackedBar" not in used_types:
-                    return "stackedBar"
-
-            # Default: pick first unused good type
-            for t in GOOD_TYPES:
-                if t not in used_types:
-                    return t
-
-            return "bar"
-
-        used_types = set()
+        family_counts: dict = {}
+        type_counts: dict = {}
         result = []
 
         for chart in charts:
             original_type = (chart.get("type") or "bar").lower()
 
-            # Force-replace bad chart types
-            if original_type in ("polararea", "polarArea", "radar"):
-                new_type = _infer_best_type(chart, used_types)
-                chart["type"] = new_type
-                used_types.add(new_type)
-                logger.info(
-                    "Chart fix: replaced '%s' with '%s' for '%s'",
-                    original_type, new_type, chart.get("title", "?"),
-                )
-                result.append(chart)
-            elif original_type in used_types:
-                # Duplicate type — reassign, but protect pie↔doughnut
-                if original_type == "pie" and "doughnut" not in used_types:
-                    chart["type"] = "doughnut"
-                    used_types.add("doughnut")
-                    logger.info("Chart diversity: pie → doughnut for '%s'", chart.get("title", "?"))
-                elif original_type == "doughnut" and "pie" not in used_types:
-                    chart["type"] = "pie"
-                    used_types.add("pie")
-                    logger.info("Chart diversity: doughnut → pie for '%s'", chart.get("title", "?"))
-                else:
-                    new_type = _infer_best_type(chart, used_types)
-                    chart["type"] = new_type
-                    used_types.add(new_type)
-                    logger.info(
-                        "Chart diversity: changed duplicate '%s' to '%s' for '%s'",
-                        original_type, new_type, chart.get("title", "?"),
-                    )
-                result.append(chart)
+            # Normalize unsupported types to a sensible default
+            if original_type in ("polararea", "radar"):
+                original_type = "bar"
+
+            current_family = TYPE_TO_FAMILY.get(original_type, "bar_family")
+
+            if family_counts.get(current_family, 0) < _family_max(current_family):
+                # Family still has quota — assign best type within it
+                chosen = _best_in_family(current_family, type_counts)
             else:
-                used_types.add(original_type)
-                result.append(chart)
+                # Family is full — find the best alternative family
+                alt_family = _pick_family(chart, family_counts, type_counts)
+                chosen = _best_in_family(alt_family, type_counts)
+                current_family = alt_family
+                if chosen != original_type:
+                    logger.info(
+                        "Chart diversity: '%s' family full → '%s' for '%s'",
+                        TYPE_TO_FAMILY.get(original_type, "?"), chosen, chart.get("title", "?"),
+                    )
+
+            chart["type"] = chosen
+            family_counts[current_family] = family_counts.get(current_family, 0) + 1
+            type_counts[chosen] = type_counts.get(chosen, 0) + 1
+            result.append(chart)
 
         return result
 
     @staticmethod
     def _detect_applicable_filters(report: dict) -> dict:
-        """Analyze all SQL in the report to determine which filters are applicable.
+        """Aggregate per-item applicable_filters into report-level filter controls.
+
+        Charts and KPIs already have their own applicable_filters list stamped
+        during execution.  This method unions them all to decide which filter
+        controls the UI should show for the report as a whole.
 
         Returns a dict like:
         {
-            "date_range": True,   # has sales_order with order_date
-            "category": True,     # has product_master
-            "product": True,      # has product_master
-            "customer": True,     # has customer_master
-            "status": True,       # has sales_order with status
+            "date_range": True,
+            "status":     True,
+            "category":   True,
+            "product":    True,
+            "customer":   True,
+            "vendor":     True,
         }
         """
-        # Collect all SQL from KPIs, charts, and table
-        all_sql = []
+        all_types: set = set()
+
+        # Collect from per-item lists (stamped during execution)
         for kpi in report.get("kpis", []):
-            if kpi.get("sql"):
-                all_sql.append(kpi["sql"])
+            all_types.update(kpi.get("applicable_filters", []))
         for chart in report.get("charts", []):
-            if chart.get("sql"):
-                all_sql.append(chart["sql"])
-        if report.get("table", {}).get("sql"):
-            all_sql.append(report["table"]["sql"])
+            all_types.update(chart.get("applicable_filters", []))
 
-        combined = " ".join(all_sql).lower()
+        # Detail table doesn't go through _execute_kpi/chart_sql — detect directly
+        table_sql = (report.get("table") or {}).get("sql", "")
+        if table_sql:
+            all_types.update(ReportPipeline._detect_item_filters(table_sql))
 
-        has_sales_order = bool(re.search(r'\bsales_order\b(?!_)', combined))
-        has_product_master = bool(re.search(r'\bproduct_master\b', combined))
-        has_customer_master = bool(re.search(r'\bcustomer_master\b', combined))
-        has_order_date = bool(re.search(r'\border_date\b', combined))
+        _known = {"date_range", "status", "category", "product", "customer", "vendor"}
+        filters = {ftype: True for ftype in all_types if ftype in _known}
 
-        filters = {}
-
-        # Date range filter — applicable if sales_order is referenced
-        if has_sales_order and has_order_date:
-            filters["date_range"] = True
-
-        # Category & Product — applicable if product_master is referenced
-        if has_product_master:
-            filters["category"] = True
-            filters["product"] = True
-
-        # Customer — applicable if customer_master is referenced
-        if has_customer_master:
-            filters["customer"] = True
-
-        # Status — applicable if sales_order is referenced
-        if has_sales_order:
-            filters["status"] = True
-
-        logger.info("Detected applicable filters: %s", filters)
+        logger.info("Detected applicable filters (aggregated): %s", filters)
         return filters
 
     def apply_filters(self, report: dict, filters: dict) -> dict[str, Any]:
         """Apply filters to an existing report by injecting WHERE clauses.
 
+        Each chart / KPI only receives the subset of filters that are
+        applicable to its own SQL (determined by its applicable_filters list).
+        This means a "Top Products by Revenue" chart gets category/product
+        filters, while a "Monthly PO Spend" chart gets only date_range/vendor.
+
         This does NOT call the LLM — it modifies existing SQL directly.
-        Much faster and more reliable than re-generating.
         """
         import copy
         report = copy.deepcopy(report)
 
-        logger.info("Applying filters to existing report: %s", filters)
+        logger.info("Applying smart per-item filters to report: %s", filters)
 
-        # Apply filters to all KPI SQLs and re-execute
+        def _item_filters(item: dict) -> dict:
+            """Build the filter subset applicable to this specific item.
+
+            Distinguishes two cases:
+            - Key absent  → legacy item (no detection ran); apply all filters.
+            - Key present → use only the listed types, even if the list is empty
+                            (an empty list means no filters apply to this item).
+            """
+            if "applicable_filters" not in item:
+                return filters   # legacy path — apply everything
+            applicable = set(item["applicable_filters"])
+            subset: dict = {}
+            # date_range maps to date_from / date_to keys in the filter dict
+            if "date_range" in applicable:
+                if "date_from" in filters:
+                    subset["date_from"] = filters["date_from"]
+                if "date_to" in filters:
+                    subset["date_to"] = filters["date_to"]
+            for key in ("status", "category", "product", "customer"):
+                if key in applicable and key in filters:
+                    subset[key] = filters[key]
+            return subset
+
+        # Apply per-item filters to all KPI SQLs and re-execute
         for kpi in report.get("kpis", []):
             original_sql = kpi.get("sql", "")
             if original_sql:
-                filtered_sql = _inject_filters(original_sql, filters)
+                kpi_filters = _item_filters(kpi)
+                filtered_sql = _inject_filters(original_sql, kpi_filters)
                 filtered_sql = _fix_report_sql(filtered_sql)
                 kpi["sql"] = filtered_sql
-                # Clear previous error/value
                 kpi.pop("error", None)
                 kpi.pop("value", None)
             self._execute_kpi_sql(kpi)
 
-        # Apply filters to all chart SQLs and re-execute
+        # Apply per-item filters to all chart SQLs and re-execute
         for chart in report.get("charts", []):
             original_sql = chart.get("sql", "")
             if original_sql:
-                filtered_sql = _inject_filters(original_sql, filters)
+                chart_filters = _item_filters(chart)
+                filtered_sql = _inject_filters(original_sql, chart_filters)
                 filtered_sql = _fix_report_sql(filtered_sql)
                 chart["sql"] = filtered_sql
-                # Clear previous error/data
                 chart.pop("error", None)
                 chart["data"] = []
             self._execute_chart_sql(chart)
 
-        # Apply filters to table SQL and re-execute
+        # Apply per-item filters to the detail table SQL and re-execute
         if "table" in report and report["table"]:
             original_sql = report["table"].get("sql", "")
             if original_sql:
-                filtered_sql = _inject_filters(original_sql, filters)
+                table_filters = _item_filters(report["table"])
+                filtered_sql = _inject_filters(original_sql, table_filters)
                 filtered_sql = _fix_report_sql(filtered_sql)
                 report["table"]["sql"] = filtered_sql
                 report["table"].pop("error", None)

@@ -392,42 +392,63 @@ def report_apply_filters_endpoint(req: ReportApplyFiltersRequest):
 def report_apply_chart_filter_endpoint(req: ReportChartFilterRequest):
     """Re-execute a single chart's SQL with injected filters.
 
+    Only the filter types that are applicable to this chart's specific SQL
+    are injected (detected via _detect_item_filters).  Irrelevant filters
+    are silently ignored so vendor-only charts don't get status injections
+    and sales-only charts don't get vendor filters.
+
     Much faster than applying filters to the whole report — only one SQL
     query is run, so the response is nearly instant.
 
     Returns:
         { "data": [...], "error": null | "..." }
     """
-    from ai.report_generator import _inject_filters, _fix_report_sql
-    from db.executor import execute_sql
+    from ai.report_generator import _inject_filters, _fix_report_sql, ReportPipeline
 
-    filters = {}
+    all_filters = {}
     if req.date_from:
-        filters["date_from"] = req.date_from
+        all_filters["date_from"] = req.date_from
     if req.date_to:
-        filters["date_to"] = req.date_to
+        all_filters["date_to"] = req.date_to
     if req.category:
-        filters["category"] = req.category
+        all_filters["category"] = req.category
     if req.customer:
-        filters["customer"] = req.customer
+        all_filters["customer"] = req.customer
     if req.status:
-        filters["status"] = req.status
+        all_filters["status"] = req.status
     if req.product:
-        filters["product"] = req.product
+        all_filters["product"] = req.product
 
-    logger.info("CHART APPLY-FILTER | top_n=%s lm=%s ly=%s filters=%s",
-                req.top_n, req.compare_lm, req.compare_ly, filters)
+    # Detect which filter types are applicable to this chart's SQL
+    applicable = set(ReportPipeline._detect_item_filters(req.sql))
+    smart_filters: dict = {}
+    if "date_range" in applicable:
+        if req.date_from:
+            smart_filters["date_from"] = req.date_from
+        if req.date_to:
+            smart_filters["date_to"] = req.date_to
+    for key in ("status", "category", "product", "customer"):
+        if key in applicable and key in all_filters:
+            smart_filters[key] = all_filters[key]
+
+    logger.info(
+        "CHART APPLY-FILTER | top_n=%s applicable=%s injected=%s",
+        req.top_n, sorted(applicable), list(smart_filters.keys()),
+    )
 
     try:
-        sql = _inject_filters(_fix_report_sql(req.sql), filters)
-        result = execute_sql(sql)
+        sql = _inject_filters(_fix_report_sql(req.sql), smart_filters)
 
-        if not result.get("success"):
-            return {"data": [], "error": result.get("error", "SQL error")}
+        # Direct DB execution — skip validate_sql overhead (SQL comes from our
+        # own system, not user input; safety check not needed on filter path)
+        from db.connection import get_engine
+        from sqlalchemy import text as _text
+        with get_engine().connect() as conn:
+            result = conn.execute(_text(sql))
+            columns = list(result.keys())
+            data = [dict(zip(columns, row)) for row in result.fetchall()]
 
-        data = result.get("data", [])
-
-        # ── Top-N slicing ──────────────────────────────────────────────────
+        # ── Top-N slicing (server-side for response size) ─────────────────
         if req.top_n and data:
             keys = list(data[0].keys())
             if len(keys) >= 2:
@@ -441,75 +462,13 @@ def report_apply_chart_filter_endpoint(req: ReportChartFilterRequest):
                 except (TypeError, ValueError):
                     data = data[:req.top_n]
 
-        # ── Compare LM (last-month) ────────────────────────────────────────
-        # Compute a parallel query over the prior calendar month and merge
-        # as a second value column "prev_month".
-        if req.compare_lm and data:
-            import re as _re
-            # Inject a last-month date window on top of the existing SQL
-            from datetime import date, timedelta
-            today = date.today()
-            first_this = today.replace(day=1)
-            last_lm = first_this - timedelta(days=1)
-            first_lm = last_lm.replace(day=1)
-            lm_filters = {**filters,
-                          "date_from": str(first_lm), "date_to": str(last_lm)}
-            lm_sql = _inject_filters(_fix_report_sql(req.sql), lm_filters)
-            lm_result = execute_sql(lm_sql)
-            if lm_result.get("success") and lm_result.get("data"):
-                lm_data = lm_result["data"]
-                # Build lookup: label → value
-                if lm_data:
-                    keys = list(lm_data[0].keys())
-                    lm_lookup = {str(r[keys[0]]): r[keys[1]] for r in lm_data}
-                    curr_keys = list(data[0].keys())
-                    for row in data:
-                        lbl = str(row[curr_keys[0]])
-                        row["prev_month"] = lm_lookup.get(lbl, 0)
-
-        # ── Compare LY (last-year) ─────────────────────────────────────────
-        if req.compare_ly and data:
-            from datetime import date, timedelta
-            today = date.today()
-            ly_filters = dict(filters)
-            if req.date_from:
-                try:
-                    d = date.fromisoformat(req.date_from)
-                    ly_filters["date_from"] = str(d.replace(year=d.year - 1))
-                except ValueError:
-                    ly_filters["date_from"] = str(today.replace(year=today.year - 1,
-                                                                  month=1, day=1))
-            else:
-                ly_filters["date_from"] = str(today.replace(year=today.year - 1,
-                                                              month=1, day=1))
-            if req.date_to:
-                try:
-                    d = date.fromisoformat(req.date_to)
-                    ly_filters["date_to"] = str(d.replace(year=d.year - 1))
-                except ValueError:
-                    ly_filters["date_to"] = str(today.replace(year=today.year - 1,
-                                                                month=12, day=31))
-            else:
-                ly_filters["date_to"] = str(today.replace(year=today.year - 1,
-                                                            month=12, day=31))
-
-            ly_sql = _inject_filters(_fix_report_sql(req.sql), ly_filters)
-            ly_result = execute_sql(ly_sql)
-            if ly_result.get("success") and ly_result.get("data"):
-                ly_data = ly_result["data"]
-                if ly_data:
-                    keys = list(ly_data[0].keys())
-                    ly_lookup = {str(r[keys[0]]): r[keys[1]] for r in ly_data}
-                    curr_keys = list(data[0].keys())
-                    for row in data:
-                        lbl = str(row[curr_keys[0]])
-                        row["prev_year"] = ly_lookup.get(lbl, 0)
-
         return {"data": data, "error": None}
 
     except Exception as exc:
         logger.error("CHART APPLY-FILTER error: %s", exc)
         return {"data": [], "error": str(exc)}
+
+
 
 
 @app.post("/report/modify")

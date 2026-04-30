@@ -12,7 +12,19 @@ def get_engine() -> Engine:
     """Return a singleton SQLAlchemy engine."""
     global _engine
     if _engine is None:
-        _engine = create_engine(config.DATABASE_URL, pool_pre_ping=True)
+        connect_args = {}
+        if config.DB_STATEMENT_TIMEOUT_MS > 0:
+            connect_args["options"] = f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT_MS}"
+
+        _engine = create_engine(
+            config.DATABASE_URL,
+            pool_size=10,
+            max_overflow=20,
+            pool_timeout=10,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            connect_args=connect_args,
+        )
     return _engine
 
 

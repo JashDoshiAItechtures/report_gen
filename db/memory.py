@@ -7,6 +7,7 @@ use recent context for follow‑up questions.
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, List, Dict
 
 from sqlalchemy import text
@@ -15,37 +16,39 @@ from db.connection import get_engine
 
 
 _TABLE_CREATED = False
+_TABLE_LOCK = threading.Lock()
 
 
 def _ensure_table() -> None:
     """Create the chat_history table if it doesn't exist, and add query_result column if missing."""
     global _TABLE_CREATED
-    if _TABLE_CREATED:
-        return
+    with _TABLE_LOCK:
+        if _TABLE_CREATED:
+            return
 
-    engine = get_engine()
-    with engine.begin() as conn:
-        conn.execute(text(
-            """
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id BIGSERIAL PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                question TEXT NOT NULL,
-                answer TEXT NOT NULL,
-                sql_query TEXT,
-                query_result TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """
-        ))
-        # Migrate existing tables that don't have the query_result column yet
-        conn.execute(text(
-            """
-            ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS query_result TEXT;
-            """
-        ))
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    sql_query TEXT,
+                    query_result TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            ))
+            # Migrate existing tables that don't have the query_result column yet
+            conn.execute(text(
+                """
+                ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS query_result TEXT;
+                """
+            ))
 
-    _TABLE_CREATED = True
+        _TABLE_CREATED = True
 
 
 def add_turn(

@@ -14,7 +14,7 @@ logger = logging.getLogger("agent.chart")
 
 
 class ChartAgent(BaseAgent):
-    """Execute all chart SQL queries concurrently and guarantee ≥5 charts."""
+    """Execute all chart SQL queries concurrently and guarantee ≥6 charts."""
 
     name = "chart"
 
@@ -87,8 +87,8 @@ class ChartAgent(BaseAgent):
                 len(valid_charts), len(executed),
             )
 
-            # ── Phase 2: fallback library (if < 5 passed) ─────────────────
-            if len(valid_charts) < 5:
+            # ── Phase 2: fallback library (if < 6 passed) ─────────────────
+            if len(valid_charts) < 6:
                 from ai.report_fallback_charts import detect_report_topic, get_fallback_charts
 
                 topic = detect_report_topic(question)
