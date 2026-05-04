@@ -58,6 +58,10 @@
     const chartOriginalData = {};  // {idx: original data array}
     const chartSpecs = {};         // {idx: full chart spec object incl. .sql}
     const chartFilters = {};       // {idx: {date_from, date_to, category, ...}}
+    const chartModHistory = {};   // {idx: ["instruction1", "instruction2", ...]}
+    let editMode = false;
+    let sortableInstance = null;
+    let reportEditHistory = [];  // commands sent to /report/chat-edit
     const chartInstances = {};     // {idx: Chart.js instance}
     let cachedFilterOptions = {};  // from /report/filters, loaded once
     let activePanelIdx = null;     // which panel is currently open
@@ -92,9 +96,20 @@
         };
     }
 
-    // Force crisp rendering on Retina / high-DPI screens
     if (typeof Chart !== "undefined") {
         Chart.defaults.devicePixelRatio = window.devicePixelRatio || 2;
+        
+        Chart.register({
+            id: 'custom_canvas_background_color',
+            beforeDraw: (chart) => {
+                const {ctx, canvas} = chart;
+                ctx.save();
+                ctx.globalCompositeOperation = 'destination-over';
+                ctx.fillStyle = document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.restore();
+            }
+        });
     }
 
     // ── Streaming Render ──────────────────────────────────────────────────
@@ -191,10 +206,11 @@
             </div>
             <div class="kpi-grid stream-section">`;
 
-            kpis.forEach(kpi => {
+            kpis.forEach((kpi, kpiIdx) => {
                 const val = formatKPIValue(kpi.value, kpi.format);
                 const hasExplanation = kpi.explanation && (kpi.explanation.what || kpi.explanation.how);
-                html += `<div class="kpi-card">
+                html += `<div class="kpi-card" style="position:relative" data-kpi-idx="${kpiIdx}">
+                    <button class="kpi-delete-btn" data-kpi-idx="${kpiIdx}" title="Delete KPI">×</button>
                     <div class="kpi-header">
                         <div class="kpi-label">${escapeHtml(kpi.label || kpi.id || "Metric")}</div>
                         ${hasExplanation ? `<button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(kpi.explanation))}' data-title="${escapeAttr(kpi.label || kpi.id || "Metric")}">
@@ -231,12 +247,28 @@
                 </div>
                 <span class="report-section-label-text">Visual Analytics</span>
             </div>
-            <div class="charts-grid stream-section">`;
+            <div class="edit-toolbar" id="editToolbar">
+                <span class="edit-toolbar-label">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    Edit Mode — drag to reorder
+                </span>
+                <button class="edit-add-btn" id="editAddChartBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add Chart
+                </button>
+                <button class="edit-add-btn" id="editAddKpiBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add KPI
+                </button>
+            </div>
+            <div class="charts-grid stream-section" id="chartsGrid">`;
 
             // Pre-compute which charts are naturally wide (line/area/stackedBar)
-            const naturallyWide = charts.map(c =>
-                ["line", "area", "stackedbar"].includes((c.type || "bar").toLowerCase())
-            );
+            const naturallyWide = charts.map(c => {
+                if (c.widthMode === "wide") return true;
+                if (c.widthMode === "normal") return false;
+                return ["line", "area", "stackedbar"].includes((c.type || "bar").toLowerCase());
+            });
 
             const shouldBeWide = [...naturallyWide];
             let col = 0;
@@ -246,7 +278,7 @@
                 } else {
                     if (col === 0) {
                         const nextWide = (i + 1 >= charts.length) || shouldBeWide[i + 1];
-                        if (nextWide) { shouldBeWide[i] = true; col = 0; }
+                        if (nextWide && charts[i].widthMode !== "normal") { shouldBeWide[i] = true; col = 0; }
                         else { col = 1; }
                     } else { col = 0; }
                 }
@@ -254,6 +286,7 @@
 
             charts.forEach((chart, idx) => {
                 const isWide = shouldBeWide[idx];
+                const isCollapsed = chart.isCollapsed === true;
                 const chartTypeBadge = (chart.type || "bar")
                     .replace("horizontalBar", "H.BAR").replace("stackedBar", "STACKED")
                     .replace("doughnut", "DONUT").toUpperCase();
@@ -267,25 +300,74 @@
                 };
 
                 const funnelSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`;
+                const wandSvg   = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 4V2m0 2v2m0-2h-2m2 0h2M9 20l9.5-9.5-2.5-2.5L6.5 17.5M3 21l3-3"/><path d="M20 7l-1-1"/></svg>`;
+                const dlSvg     = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+                const sendSvgTpl = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
 
                 html += `<div class="chart-card${isWide ? " chart-full-width" : ""}" data-chart-idx="${idx}" style="position:relative;">
                     <div class="chart-header" id="chart-header-${idx}">
                         <span class="chart-title">${escapeHtml(chart.title || "Chart " + (idx + 1))}</span>
                         <div class="chart-header-right">
                             <span class="chart-type-badge">${chartTypeBadge}</span>
+                            <button class="chart-filter-btn" id="chart-resize-btn-${idx}" title="Minimize/Maximize Width" data-chart-idx="${idx}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                            </button>
+                            <button class="chart-filter-btn" id="chart-collapse-btn-${idx}" title="Collapse/Expand Graph" data-chart-idx="${idx}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="${isCollapsed ? '6 9 12 15 18 9' : '18 15 12 9 6 15'}"/></svg>
+                            </button>
                             <button class="chart-filter-btn" id="chart-filter-btn-${idx}" title="Chart Filters" data-chart-idx="${idx}">
                                 ${funnelSvg}
                             </button>
+                            <button class="chart-ai-btn" id="chart-ai-btn-${idx}" title="AI Modify (natural language)" data-chart-idx="${idx}">
+                                ${wandSvg}
+                            </button>
+                            <div style="position:relative">
+                                <button class="chart-export-btn" id="chart-export-btn-${idx}" title="Export / Download" data-chart-idx="${idx}">
+                                    ${dlSvg}
+                                </button>
+                                <div class="chart-export-menu" id="chart-export-menu-${idx}">
+                                    <button class="chart-export-item" data-action="png" data-chart-idx="${idx}">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                        Download PNG
+                                    </button>
+                                    <button class="chart-export-item" data-action="pdf" data-chart-idx="${idx}">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                        Download PDF
+                                    </button>
+                                    <button class="chart-export-item" data-action="sql" data-chart-idx="${idx}">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                                        View SQL
+                                    </button>
+                                </div>
+                            </div>
                             <button class="kpi-eye-btn" data-explain='${escapeAttr(JSON.stringify(expl))}' data-title="${escapeAttr(chart.title || "Chart")}">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                             </button>
                         </div>
                         <div class="chart-filter-badges" id="chart-badges-${idx}"></div>
                     </div>
-                    <div class="chart-body" id="chart-body-${idx}">
-                        <canvas id="chart_${idx}"></canvas>
+                    <div class="chart-body-container" style="display: ${isCollapsed ? 'none' : 'block'}">
+                        <div class="chart-body" id="chart-body-${idx}">
+                            <canvas id="chart_${idx}"></canvas>
+                        </div>
+                        ${chartInsight ? `<div class="chart-insight-text">&#x1F4A1; ${escapeHtml(chartInsight)}</div>` : ""}
                     </div>
-                    ${chartInsight ? `<div class="chart-insight-text">&#x1F4A1; ${escapeHtml(chartInsight)}</div>` : ""}
+                    <div class="chart-ai-panel" id="ai-panel-${idx}">
+                        <div class="ai-panel-header">
+                            ${wandSvg}
+                            AI Modify
+                            <span style="margin-left:auto;font-size:0.54rem;opacity:0.45;font-weight:600;text-transform:none;letter-spacing:0">context-aware</span>
+                        </div>
+                        <div class="ai-panel-history" id="ai-history-${idx}"></div>
+                        <div class="ai-panel-input">
+                            <input type="text" class="ai-panel-input-box" id="ai-input-${idx}"
+                                   placeholder="e.g. 'show top 5', 'convert to line', 'filter Mumbai'" />
+                            <button class="ai-send-btn" id="ai-send-${idx}" data-chart-idx="${idx}">
+                                ${sendSvgTpl}
+                            </button>
+                        </div>
+                    </div>
+                    <button class="chart-delete-btn" data-chart-idx="${idx}" title="Remove chart">×</button>
                 </div>`;
             });
 
@@ -400,6 +482,124 @@
                 openChartFilterPanel(idx, btn);
             });
         });
+
+        // ── Wire AI modify buttons ────────────────────────────────────────
+        content.querySelectorAll(".chart-ai-btn").forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.chartIdx, 10);
+                toggleChartAiPanel(idx);
+            });
+        });
+
+        // ── Wire resize and collapse buttons ──────────────────────────────
+        content.querySelectorAll(".chart-resize-btn, [id^='chart-resize-btn-']").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const idx = parseInt(btn.dataset.chartIdx, 10);
+                const spec = chartSpecs[idx];
+                if (!spec) return;
+                const isWide = btn.closest(".chart-card").classList.contains("chart-full-width");
+                spec.widthMode = isWide ? "normal" : "wide";
+                currentReport.charts[idx] = spec;
+                reRenderReport(currentReport);
+            });
+        });
+        
+        content.querySelectorAll("[id^='chart-collapse-btn-']").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const idx = parseInt(btn.dataset.chartIdx, 10);
+                const spec = chartSpecs[idx];
+                if (!spec) return;
+                spec.isCollapsed = !spec.isCollapsed;
+                currentReport.charts[idx] = spec;
+                reRenderReport(currentReport);
+            });
+        });
+
+        // ── Wire export dropdown buttons ──────────────────────────────────
+        content.querySelectorAll(".chart-export-btn").forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.chartIdx, 10);
+                const menu = document.getElementById(`chart-export-menu-${idx}`);
+                if (menu) {
+                    document.querySelectorAll(".chart-export-menu.open").forEach(m => {
+                        if (m !== menu) m.classList.remove("open");
+                    });
+                    menu.classList.toggle("open");
+                }
+            });
+        });
+
+        // ── Wire export menu items ────────────────────────────────────────
+        content.querySelectorAll(".chart-export-item").forEach(item => {
+            item.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const idx    = parseInt(item.dataset.chartIdx, 10);
+                const action = item.dataset.action;
+                const menu   = document.getElementById(`chart-export-menu-${idx}`);
+                if (menu) menu.classList.remove("open");
+                if (action === "png") exportChartPNG(idx);
+                else if (action === "pdf") exportChartPDF(idx);
+                else if (action === "sql") showChartSql(idx);
+            });
+        });
+
+        // ── Wire AI send buttons ──────────────────────────────────────────
+        content.querySelectorAll(".ai-send-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const idx = parseInt(btn.dataset.chartIdx, 10);
+                sendChartModification(idx);
+            });
+        });
+
+        // ── Wire AI input Enter key ───────────────────────────────────────
+        content.querySelectorAll(".ai-panel-input-box").forEach(input => {
+            input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const idx = parseInt(input.id.replace("ai-input-", ""), 10);
+                    sendChartModification(idx);
+                }
+            });
+        });
+
+        // ── Wire chart delete buttons ─────────────────────────────────────
+        content.querySelectorAll(".chart-delete-btn").forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                deleteChart(parseInt(btn.dataset.chartIdx, 10));
+            });
+        });
+
+        // ── Wire KPI delete buttons ───────────────────────────────────────
+        content.querySelectorAll(".kpi-delete-btn").forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                deleteKpi(parseInt(btn.dataset.kpiIdx, 10));
+            });
+        });
+
+        // ── Wire edit toolbar shortcut buttons ────────────────────────────
+        const addChartBtn = document.getElementById("editAddChartBtn");
+        if (addChartBtn) {
+            addChartBtn.addEventListener("click", () => {
+                openChatPanel();
+                const input = document.getElementById("rcpInput");
+                if (input) { input.value = "add bar chart for "; input.focus(); }
+            });
+        }
+        const addKpiBtn = document.getElementById("editAddKpiBtn");
+        if (addKpiBtn) {
+            addKpiBtn.addEventListener("click", () => {
+                openChatPanel();
+                const input = document.getElementById("rcpInput");
+                if (input) { input.value = "add KPI for "; input.focus(); }
+            });
+        }
+
+        // ── Re-init sortable if still in edit mode after re-render ────────
+        if (editMode) { setTimeout(initSortable, 80); }
 
         // ── Streaming reveal ──────────────────────────────────────────────
         streamReveal(content);
@@ -1699,6 +1899,648 @@
 
     thoughtClose.addEventListener("click", () => thoughtOverlay.classList.add("hidden"));
     thoughtOverlay.addEventListener("click", e => { if (e.target === thoughtOverlay) thoughtOverlay.classList.add("hidden"); });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  EDIT MODE — DRAG & DROP, DELETE, RE-RENDER
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function toggleEditMode() {
+        editMode = !editMode;
+        document.body.classList.toggle("edit-mode", editMode);
+
+        const btn = document.getElementById("reportEditModeBtn");
+        if (btn) {
+            btn.classList.toggle("active", editMode);
+            const editSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+            const doneSvg  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg>`;
+            btn.innerHTML  = (editMode ? doneSvg + " Done Editing" : editSvg + " Edit Report");
+        }
+
+        const badge = document.getElementById("rcpEditBadge");
+        if (badge) badge.style.display = editMode ? "" : "none";
+
+        if (editMode) {
+            initSortable();
+            openChatPanel();
+        } else {
+            destroySortable();
+        }
+    }
+
+    function initSortable() {
+        if (!window.Sortable) return;
+        const grid = document.getElementById("chartsGrid");
+        if (!grid) return;
+        destroySortable();
+        sortableInstance = new Sortable(grid, {
+            animation: 160,
+            ghostClass: "sortable-ghost",
+            chosenClass: "sortable-chosen",
+            handle: ".chart-header",
+            onEnd: () => {
+                const cards = grid.querySelectorAll("[data-chart-idx]");
+                const newOrder = [];
+                cards.forEach(card => {
+                    const idx = parseInt(card.dataset.chartIdx, 10);
+                    const spec = chartSpecs[idx];
+                    if (spec) newOrder.push(spec);
+                });
+                currentReport.charts = newOrder;
+                _persistReport(currentReport);
+            },
+        });
+    }
+
+    function destroySortable() {
+        if (sortableInstance) { sortableInstance.destroy(); sortableInstance = null; }
+    }
+
+    function _persistReport(report) {
+        try {
+            const stored = JSON.parse(localStorage.getItem(reportId) || "{}");
+            stored.report = report;
+            localStorage.setItem(reportId, JSON.stringify(stored));
+        } catch (_) {}
+    }
+
+    function reRenderReport(newReport) {
+        // Destroy Chart.js instances to free canvas
+        Object.keys(chartInstances).forEach(k => {
+            try { chartInstances[k].destroy(); } catch (_) {}
+            delete chartInstances[k];
+        });
+        // Clear all per-chart state
+        [chartSpecs, chartFilters, chartOriginalData, chartModHistory].forEach(obj => {
+            Object.keys(obj).forEach(k => delete obj[k]);
+        });
+        destroySortable();
+
+        currentReport = newReport;
+        originalReport = JSON.parse(JSON.stringify(newReport));
+        _persistReport(newReport);
+
+        renderReport(newReport);
+    }
+
+    function deleteChart(idx) {
+        const spec = chartSpecs[idx];
+        if (!spec) return;
+        const title = spec.title || `Chart ${idx + 1}`;
+        if (!confirm(`Remove chart "${title}" from the report?`)) return;
+        currentReport.charts = (currentReport.charts || []).filter(c => c.title !== spec.title);
+        reRenderReport(currentReport);
+        _addRcpMsg("assistant", `Removed chart "${title}".`);
+    }
+
+    function deleteKpi(kpiIdx) {
+        const kpis = currentReport.kpis || [];
+        if (kpiIdx < 0 || kpiIdx >= kpis.length) return;
+        const kpi = kpis[kpiIdx];
+        const title = kpi.label || kpi.title || kpi.id || `KPI ${kpiIdx + 1}`;
+        if (!confirm(`Remove KPI "${title}" from the report?`)) return;
+        currentReport.kpis = kpis.filter((_, i) => i !== kpiIdx);
+        reRenderReport(currentReport);
+        _addRcpMsg("assistant", `Removed KPI "${title}".`);
+    }
+
+    // ── Wire Edit Mode button ─────────────────────────────────────────────
+    const reportEditModeBtn = document.getElementById("reportEditModeBtn");
+    if (reportEditModeBtn) reportEditModeBtn.addEventListener("click", toggleEditMode);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  GLOBAL REPORT CHAT PANEL
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function openChatPanel() {
+        const panel = document.getElementById("reportChatPanel");
+        const fab   = document.getElementById("reportChatFab");
+        if (panel) panel.classList.add("open");
+        if (fab)   fab.classList.add("hidden");
+    }
+
+    function closeChatPanel() {
+        const panel = document.getElementById("reportChatPanel");
+        const fab   = document.getElementById("reportChatFab");
+        if (panel) panel.classList.remove("open");
+        if (fab)   fab.classList.remove("hidden");
+    }
+
+    function _addRcpMsg(role, text, clarifyOptions) {
+        const historyEl = document.getElementById("rcpHistory");
+        if (!historyEl) return;
+        const welcome = document.getElementById("rcpWelcome");
+        if (welcome) welcome.style.display = "none";
+
+        const msgDiv = document.createElement("div");
+        msgDiv.className = `rcp-msg ${role}`;
+        const bubble = document.createElement("div");
+        bubble.className = "rcp-msg-bubble";
+        bubble.textContent = text;
+        msgDiv.appendChild(bubble);
+        historyEl.appendChild(msgDiv);
+
+        if (clarifyOptions && clarifyOptions.length) {
+            const wrap = document.createElement("div");
+            wrap.className = "rcp-msg assistant";
+            const optsDiv = document.createElement("div");
+            optsDiv.className = "rcp-clarify-opts";
+            clarifyOptions.forEach(opt => {
+                const btn = document.createElement("button");
+                btn.className = "rcp-clarify-opt";
+                btn.textContent = opt;
+                btn.addEventListener("click", () => sendReportEdit(opt));
+                optsDiv.appendChild(btn);
+            });
+            wrap.appendChild(optsDiv);
+            historyEl.appendChild(wrap);
+        }
+        historyEl.scrollTop = historyEl.scrollHeight;
+    }
+
+    const _RCP_SEND_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
+
+    async function sendReportEdit(overrideCommand) {
+        const input   = document.getElementById("rcpInput");
+        const sendBtn = document.getElementById("rcpSend");
+        const cmd = overrideCommand || (input ? input.value.trim() : "");
+        if (!cmd) return;
+
+        if (input && !overrideCommand) input.value = "";
+        hideMentionDropdown();
+        _addRcpMsg("user", cmd);
+
+        if (sendBtn) { sendBtn.disabled = true; sendBtn.innerHTML = `<div class="rcp-spinner"></div>`; }
+
+        reportEditHistory.push(cmd);
+
+        try {
+            const res = await fetch("/report/chat-edit", {
+                method:  "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    report:   currentReport,
+                    command:  cmd,
+                    history:  reportEditHistory.slice(-5),
+                    provider: localStorage.getItem(reportId + "_provider") || "groq",
+                }),
+            });
+            if (!res.ok) throw new Error(`Server error ${res.status}`);
+            const result = await res.json();
+
+            if (result.mode === "updated") {
+                reRenderReport(result.report);
+                _addRcpMsg("assistant", `✓ ${result.message || "Report updated."}`);
+            } else if (result.mode === "clarify") {
+                _addRcpMsg("assistant", result.message || "What did you mean?", result.options || []);
+                reportEditHistory.pop();
+            } else if (result.mode === "no_change") {
+                _addRcpMsg("assistant", result.message || "No changes needed.");
+            } else if (result.mode === "error") {
+                _addRcpMsg("error", `Error: ${result.error}`);
+            }
+        } catch (err) {
+            console.error("Report chat-edit failed:", err);
+            _addRcpMsg("error", `Failed: ${err.message || "Unknown error"}`);
+        }
+
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = _RCP_SEND_SVG; }
+    }
+
+    // ── @Mention autocomplete ─────────────────────────────────────────────
+
+    function _getMentionTargets() {
+        const charts = currentReport.charts || [];
+        const kpis   = currentReport.kpis   || [];
+        const out = [];
+        charts.forEach(c => { if (c.title) out.push({ title: c.title, type: "chart" }); });
+        kpis.forEach(k => {
+            const t = k.label || k.title || k.id;
+            if (t) out.push({ title: t, type: "kpi" });
+        });
+        return out;
+    }
+
+    function showMentionDropdown(query) {
+        const dd = document.getElementById("rcpMentionDropdown");
+        if (!dd) return;
+        const all      = _getMentionTargets();
+        const filtered = query
+            ? all.filter(t => t.title.toLowerCase().includes(query.toLowerCase()))
+            : all;
+        if (!filtered.length) { dd.classList.add("hidden"); return; }
+
+        dd.innerHTML = "";
+        filtered.slice(0, 8).forEach(t => {
+            const btn = document.createElement("button");
+            btn.className = "rcp-mention-item";
+            btn.innerHTML = `<span>${escapeHtml(t.title)}</span><span class="rcp-mention-item-type">${t.type}</span>`;
+            btn.addEventListener("click", () => insertMention(t.title));
+            dd.appendChild(btn);
+        });
+        dd.classList.remove("hidden");
+    }
+
+    function hideMentionDropdown() {
+        const dd = document.getElementById("rcpMentionDropdown");
+        if (dd) dd.classList.add("hidden");
+    }
+
+    function insertMention(title) {
+        const input = document.getElementById("rcpInput");
+        if (!input) return;
+        const val    = input.value;
+        const atIdx  = val.lastIndexOf("@");
+        const slug   = title.replace(/\s+/g, "-");
+        input.value  = atIdx !== -1
+            ? val.substring(0, atIdx) + `@${slug} `
+            : val + `@${slug} `;
+        hideMentionDropdown();
+        input.focus();
+    }
+
+    // ── Wire global chat panel buttons ────────────────────────────────────
+
+    const rcpFab   = document.getElementById("reportChatFab");
+    const rcpClose = document.getElementById("rcpClose");
+    const rcpSend  = document.getElementById("rcpSend");
+    const rcpInput = document.getElementById("rcpInput");
+
+    if (rcpFab)   rcpFab.addEventListener("click", openChatPanel);
+    if (rcpClose) rcpClose.addEventListener("click", closeChatPanel);
+    if (rcpSend)  rcpSend.addEventListener("click", () => sendReportEdit());
+
+    if (rcpInput) {
+        rcpInput.addEventListener("input", () => {
+            const m = rcpInput.value.match(/@([\w-]*)$/);
+            m ? showMentionDropdown(m[1]) : hideMentionDropdown();
+        });
+        rcpInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                hideMentionDropdown();
+                sendReportEdit();
+            }
+            if (e.key === "Escape") hideMentionDropdown();
+        });
+    }
+
+    // Wire example buttons in chat panel
+    document.querySelectorAll(".rcp-example").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const text = btn.textContent.replace(/^"|"$/g, "").trim();
+            openChatPanel();
+            sendReportEdit(text);
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  AI CHART MODIFICATION
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const _SEND_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
+
+    function toggleChartAiPanel(idx) {
+        const panel = document.getElementById(`ai-panel-${idx}`);
+        const btn   = document.getElementById(`chart-ai-btn-${idx}`);
+        if (!panel) return;
+        const isOpen = panel.classList.contains("open");
+        if (isOpen) {
+            panel.classList.remove("open");
+            if (btn) btn.classList.remove("active");
+        } else {
+            panel.classList.add("open");
+            if (btn) btn.classList.add("active");
+            setTimeout(() => {
+                const inp = document.getElementById(`ai-input-${idx}`);
+                if (inp) inp.focus();
+            }, 60);
+        }
+    }
+
+    function _addAiMsg(idx, role, text, clarifyOptions) {
+        const historyEl = document.getElementById(`ai-history-${idx}`);
+        if (!historyEl) return;
+
+        const msgDiv = document.createElement("div");
+        msgDiv.className = `ai-msg ${role}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = "ai-msg-bubble";
+        bubble.textContent = text;
+        msgDiv.appendChild(bubble);
+        historyEl.appendChild(msgDiv);
+
+        if (clarifyOptions && clarifyOptions.length) {
+            const wrapDiv = document.createElement("div");
+            wrapDiv.className = "ai-msg assistant";
+            const optsDiv = document.createElement("div");
+            optsDiv.className = "ai-clarify-options";
+            clarifyOptions.forEach(opt => {
+                const optBtn = document.createElement("button");
+                optBtn.className = "ai-clarify-opt";
+                optBtn.textContent = opt;
+                optBtn.addEventListener("click", () => sendChartModification(idx, opt));
+                optsDiv.appendChild(optBtn);
+            });
+            wrapDiv.appendChild(optsDiv);
+            historyEl.appendChild(wrapDiv);
+        }
+
+        historyEl.scrollTop = historyEl.scrollHeight;
+    }
+
+    async function sendChartModification(idx, overrideInstruction) {
+        const input   = document.getElementById(`ai-input-${idx}`);
+        const sendBtn = document.getElementById(`ai-send-${idx}`);
+
+        const instruction = overrideInstruction || (input ? input.value.trim() : "");
+        if (!instruction) return;
+
+        if (input && !overrideInstruction) input.value = "";
+
+        _addAiMsg(idx, "user", instruction);
+
+        if (sendBtn) {
+            sendBtn.disabled = true;
+            sendBtn.innerHTML = `<div class="ai-send-spinner"></div>`;
+        }
+
+        const spec = chartSpecs[idx];
+        if (!spec) {
+            _addAiMsg(idx, "assistant error", "Chart not found.");
+            if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = _SEND_SVG; }
+            return;
+        }
+
+        const chartForRequest = {
+            id:      spec.id || "",
+            title:   spec.title || "",
+            type:    spec.type  || "bar",
+            sql:     spec.sql   || "",
+            x_label: spec.x_label || "",
+            y_label: spec.y_label || "",
+            data:    (spec.data || []).slice(0, 5),
+        };
+
+        const modHistory = chartModHistory[idx] || [];
+
+        try {
+            const res = await fetch("/report/modify-chart", {
+                method:  "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    chart:       chartForRequest,
+                    instruction: instruction,
+                    history:     modHistory,
+                    provider:    localStorage.getItem(reportId + "_provider") || "groq",
+                }),
+            });
+
+            if (!res.ok) throw new Error(`Server error ${res.status}`);
+            const result = await res.json();
+
+            if (result.mode === "modified") {
+                const updatedChart = result.chart || {};
+
+                // SQL changed → new data returned; type/label-only → keep original
+                const renderData = result.sql_changed && updatedChart.data && updatedChart.data.length
+                    ? updatedChart.data
+                    : (chartOriginalData[idx] || spec.data || []);
+
+                chartSpecs[idx]        = { ...spec, ...updatedChart, data: renderData };
+                if (result.sql_changed) chartOriginalData[idx] = renderData;
+                chartFilters[idx]      = {};
+
+                // Re-render with correct data
+                renderChartOrNoData(idx, renderData);
+
+                // Sync type badge
+                const badgeEl = document.querySelector(`[data-chart-idx="${idx}"] .chart-type-badge`);
+                if (badgeEl && updatedChart.type) {
+                    const dt = (updatedChart.type)
+                        .replace("horizontalBar", "H.BAR").replace("stackedBar", "STACKED")
+                        .replace("doughnut", "DONUT").toUpperCase();
+                    badgeEl.textContent = dt;
+                }
+
+                // Sync title in header
+                const titleEl = document.querySelector(`[data-chart-idx="${idx}"] .chart-title`);
+                if (titleEl && updatedChart.title) titleEl.textContent = updatedChart.title;
+
+                // Record in context memory
+                if (!chartModHistory[idx]) chartModHistory[idx] = [];
+                chartModHistory[idx].push(instruction);
+
+                _addAiMsg(idx, "assistant", `✓ ${result.explanation || "Chart updated."}`);
+
+            } else if (result.mode === "clarify") {
+                _addAiMsg(idx, "assistant", result.message || "What did you mean?", result.options || []);
+
+            } else if (result.mode === "no_change") {
+                _addAiMsg(idx, "assistant", result.message || "No changes needed.");
+
+            } else if (result.mode === "error") {
+                _addAiMsg(idx, "assistant error", `Error: ${result.error}`);
+
+            } else {
+                _addAiMsg(idx, "assistant error", "Unexpected response from server.");
+            }
+
+        } catch (err) {
+            console.error("Chart modification failed:", err);
+            _addAiMsg(idx, "assistant error", `Failed: ${err.message || "Unknown error"}`);
+        }
+
+        if (sendBtn) {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = _SEND_SVG;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  EXPORT FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function exportChartPNG(idx) {
+        const canvas = document.getElementById(`chart_${idx}`);
+        if (!canvas) { console.warn("Chart canvas not found for idx", idx); return; }
+        const spec     = chartSpecs[idx] || {};
+        const filename = (spec.title || `chart-${idx}`)
+            .replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
+            
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+        const ctx = tempCanvas.getContext("2d");
+        
+        const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+        ctx.fillStyle = isDark ? "#161b22" : "#ffffff";
+        ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+        ctx.drawImage(canvas, 0, 0);
+
+        const link  = document.createElement("a");
+        link.download = filename;
+        link.href     = tempCanvas.toDataURL("image/png", 1.0);
+        link.click();
+    }
+
+    function exportChartPDF(idx) {
+        const canvas = document.getElementById(`chart_${idx}`);
+        if (!canvas) { exportChartPNG(idx); return; }
+        const spec = chartSpecs[idx] || {};
+
+        try {
+            if (!window.jspdf) throw new Error("jsPDF not loaded");
+            const { jsPDF } = window.jspdf;
+            const doc   = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+            const pageW = doc.internal.pageSize.getWidth();
+            const pageH = doc.internal.pageSize.getHeight();
+
+            // Header bar
+            doc.setFillColor(99, 102, 241);
+            doc.rect(0, 0, pageW, 10, "F");
+            doc.setTextColor(255, 255, 255);
+            doc.setFontSize(9); doc.setFont("helvetica", "bold");
+            doc.text("AI Analytics Report", 8, 7);
+            doc.setFontSize(8); doc.setFont("helvetica", "normal");
+            doc.text(new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }), pageW - 8, 7, { align: "right" });
+
+            // Chart title
+            doc.setTextColor(15, 23, 42);
+            doc.setFontSize(15); doc.setFont("helvetica", "bold");
+            doc.text(spec.title || "Chart", 8, 21);
+
+            // Axis labels
+            const xLabel = spec.x_label || "";
+            const yLabel = spec.y_label || "";
+            if (xLabel || yLabel) {
+                doc.setFontSize(8); doc.setFont("helvetica", "normal");
+                doc.setTextColor(100, 116, 139);
+                const lbl = [xLabel && `X: ${xLabel}`, yLabel && `Y: ${yLabel}`].filter(Boolean).join("  •  ");
+                doc.text(lbl, 8, 27);
+            }
+
+            // Applied filters
+            const filters = chartFilters[idx] || {};
+            const fParts = [
+                filters._datePreset && `Period: ${filters._datePreset}`,
+                (!filters._datePreset && filters.date_from) && `From: ${filters.date_from}`,
+                (!filters._datePreset && filters.date_to)   && `To: ${filters.date_to}`,
+                filters.category && `Category: ${filters.category}`,
+                filters.product  && `Product: ${filters.product}`,
+                filters.status   && `Status: ${filters.status}`,
+                filters.top_n    && `Top ${filters.top_n}`,
+            ].filter(Boolean);
+            if (fParts.length) {
+                doc.setFontSize(7.5); doc.setFont("helvetica", "italic");
+                doc.setTextColor(99, 102, 241);
+                doc.text(`Filters: ${fParts.join(" | ")}`, 8, 32);
+            }
+
+            // Chart image
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const ctx = tempCanvas.getContext("2d");
+            const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+            ctx.fillStyle = isDark ? "#161b22" : "#ffffff";
+            ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            ctx.drawImage(canvas, 0, 0);
+
+            const imgData = tempCanvas.toDataURL("image/png", 1.0);
+            const imgStartY = 36;
+            const imgW  = pageW - 16;
+            const maxH  = pageH - imgStartY - 28;
+            const imgH  = Math.min(imgW * (canvas.height / canvas.width), maxH);
+            doc.addImage(imgData, "PNG", 8, imgStartY, imgW, imgH);
+
+            // Insight
+            const insight = spec.chart_insight || (spec.explanation && spec.explanation.insight) || "";
+            if (insight) {
+                const insY = imgStartY + imgH + 5;
+                if (insY < pageH - 16) {
+                    doc.setFontSize(8.5); doc.setFont("helvetica", "italic");
+                    doc.setTextColor(71, 85, 105);
+                    const lines = doc.splitTextToSize(`💡 ${insight}`, pageW - 16);
+                    doc.text(lines.slice(0, 2), 8, insY);
+                }
+            }
+
+            // SQL (tiny, footer)
+            if (spec.sql) {
+                doc.setFontSize(6); doc.setFont("courier", "normal");
+                doc.setTextColor(148, 163, 184);
+                const sqlLines = doc.splitTextToSize(spec.sql.replace(/\s+/g, " "), pageW - 16);
+                doc.text(sqlLines.slice(0, 2), 8, pageH - 6);
+            }
+
+            const filename = (spec.title || `chart-${idx}`)
+                .replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".pdf";
+            doc.save(filename);
+
+        } catch (err) {
+            console.error("PDF export failed, falling back to PNG:", err);
+            exportChartPNG(idx);
+        }
+    }
+
+    function exportFullReportPDF() {
+        window.print();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  SQL MODAL
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function showChartSql(idx) {
+        const spec = chartSpecs[idx];
+        if (!spec || !spec.sql) { alert("No SQL available for this chart."); return; }
+        showSqlModal(spec.title || `Chart ${idx + 1}`, spec.sql);
+    }
+
+    function showSqlModal(title, sql) {
+        const overlay  = document.getElementById("sqlModalOverlay");
+        const titleEl  = document.getElementById("sqlModalTitle");
+        const codeEl   = document.getElementById("sqlModalCode");
+        if (!overlay || !titleEl || !codeEl) return;
+        titleEl.textContent = `SQL — ${title}`;
+        codeEl.textContent  = sql;
+        overlay.classList.remove("hidden");
+    }
+
+    // SQL modal close
+    const sqlModalOverlay = document.getElementById("sqlModalOverlay");
+    const sqlModalClose   = document.getElementById("sqlModalClose");
+    const sqlCopyBtn      = document.getElementById("sqlCopyBtn");
+    if (sqlModalClose) {
+        sqlModalClose.addEventListener("click", () => sqlModalOverlay.classList.add("hidden"));
+    }
+    if (sqlModalOverlay) {
+        sqlModalOverlay.addEventListener("click", e => {
+            if (e.target === sqlModalOverlay) sqlModalOverlay.classList.add("hidden");
+        });
+    }
+    if (sqlCopyBtn) {
+        sqlCopyBtn.addEventListener("click", () => {
+            const codeEl = document.getElementById("sqlModalCode");
+            if (!codeEl) return;
+            navigator.clipboard.writeText(codeEl.textContent).then(() => {
+                sqlCopyBtn.textContent = "Copied!";
+                setTimeout(() => { sqlCopyBtn.textContent = "Copy SQL"; }, 1800);
+            });
+        });
+    }
+
+    // ── Export PDF topbar button ──────────────────────────────────────────
+    const exportPdfBtn = document.getElementById("reportExportPdfBtn");
+    if (exportPdfBtn) {
+        exportPdfBtn.addEventListener("click", exportFullReportPDF);
+    }
+
+    // ── Close export menus on outside click ──────────────────────────────
+    document.addEventListener("click", () => {
+        document.querySelectorAll(".chart-export-menu.open").forEach(m => m.classList.remove("open"));
+    });
 
     // ── Utilities ─────────────────────────────────────────────────────────
     function escapeHtml(str) {

@@ -39,21 +39,21 @@ class InsightAgent(BaseAgent):
             from ai.report_fallback_insights import get_fallback_insights
 
             topic: str = blueprint.get("topic") or detect_report_topic(question)
-            self.logger.info("Insight agent — topic=%s", topic)
+            month: int | None = blueprint.get("_detected_month")
+            self.logger.info("Insight agent — topic=%s month=%s", topic, month)
 
             # ── Run insight SQL queries in thread pool ────────────────────
             def _build_insights():
-                return get_fallback_insights(topic, existing_titles=None)
+                return get_fallback_insights(topic, existing_titles=None, month=month)
 
             fallback_insights: list = await self.run_in_executor(_build_insights)
 
-            # Always use fallback insights — they have real data + correct sentiment
-            # LLM insights are discarded entirely to prevent hallucinated placeholders
+            # Always use fallback insights — real data + correct sentiment
             merged = fallback_insights[:8]  # cap at 8
 
             self.logger.info(
-                "Insight agent — %d data-backed insights generated (topic=%s)",
-                len(merged), topic,
+                "Insight agent — %d insights generated (topic=%s month=%s)",
+                len(merged), topic, month,
             )
 
         return {

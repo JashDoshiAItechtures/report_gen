@@ -16,8 +16,24 @@ logger = logging.getLogger(__name__)
 # Helper: run a single-value SQL query and return the raw scalar result.
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _scalar(sql: str):
-    """Execute SQL and return the first value of the first row, or None on error."""
+def _scalar(sql: str, month: int | None = None):
+    """Execute SQL and return the first value of the first row, or None on error.
+
+    If month is given, inject EXTRACT(MONTH FROM order_date) = month after
+    every WHERE clause so insights are scoped to that specific month.
+    """
+    if month:
+        import re as _re
+        # One-pass injection: catch 'so.status' alias or bare 'status' form.
+        # Use a negative-lookbehind to avoid double-injection.
+        sql = _re.sub(
+            r"(WHERE\s+(?:so\.)?status\s*=\s*'closed')(?!.*EXTRACT\(MONTH)",
+            lambda m: m.group(0) + f" AND EXTRACT(MONTH FROM order_date) = {month}",
+            sql, flags=_re.IGNORECASE | _re.DOTALL
+        )
+        # If query has no status filter but does reference sales_order (e.g. fulfilment rate query)
+        if "EXTRACT(MONTH" not in sql and "sales_order" in sql.lower() and "WHERE" not in sql.upper():
+            sql = sql.rstrip() + f" WHERE EXTRACT(MONTH FROM order_date) = {month}"
     try:
         from db.executor import execute_sql
         result = execute_sql(sql)
@@ -73,12 +89,12 @@ def _insight(title: str, body: str, itype: str) -> dict:
 # SALES insights
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _sales_insights() -> list[dict]:
+def _sales_insights(month: int | None = None) -> list[dict]:
     insights = []
 
     # 1. Total revenue snapshot
-    total_rev = _scalar("SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='closed'")
-    total_orders = _scalar("SELECT COUNT(*) FROM sales_order WHERE status='closed'")
+    total_rev = _scalar("SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='closed'", month=month)
+    total_orders = _scalar("SELECT COUNT(*) FROM sales_order WHERE status='closed'", month=month)
     if total_rev is not None and total_orders is not None:
         insights.append(_insight(
             "Revenue Snapshot",
@@ -89,7 +105,7 @@ def _sales_insights() -> list[dict]:
         ))
 
     # 2. Average order value
-    aov = _scalar("SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'")
+    aov = _scalar("SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'", month=month)
     if aov is not None:
         insights.append(_insight(
             "Average Order Value",
@@ -178,8 +194,8 @@ def _sales_insights() -> list[dict]:
         ))
 
     # 6. Open pipeline
-    open_orders = _scalar("SELECT COUNT(*) FROM sales_order WHERE status='open'")
-    open_val = _scalar("SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='open'")
+    open_orders = _scalar("SELECT COUNT(*) FROM sales_order WHERE status='open'", month=month)
+    open_val = _scalar("SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='open'", month=month)
     if open_orders is not None and open_val is not None:
         insights.append(_insight(
             "Open Order Pipeline",
@@ -244,11 +260,11 @@ def _sales_insights() -> list[dict]:
 # CUSTOMER insights
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _customer_insights() -> list[dict]:
+def _customer_insights(month: int | None = None) -> list[dict]:
     insights = []
 
-    total_custs = _scalar("SELECT COUNT(*) FROM customer_master")
-    active_custs = _scalar("SELECT COUNT(DISTINCT customer_id) FROM sales_order WHERE status='closed'")
+    total_custs = _scalar("SELECT COUNT(*) FROM customer_master", month=month)
+    active_custs = _scalar("SELECT COUNT(DISTINCT customer_id) FROM sales_order WHERE status='closed'", month=month)
     if total_custs and active_custs:
         inactive = int(total_custs) - int(active_custs)
         itype = "warning" if inactive > int(total_custs) * 0.2 else "positive"
@@ -329,7 +345,7 @@ def _customer_insights() -> list[dict]:
             "positive" if float(fulfil) >= 80 else "warning",
         ))
 
-    aov = _scalar("SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'")
+    aov = _scalar("SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'", month=month)
     if aov:
         insights.append(_insight(
             "Basket Size Opportunity",
@@ -346,10 +362,10 @@ def _customer_insights() -> list[dict]:
 # PRODUCT insights
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _product_insights() -> list[dict]:
+def _product_insights(month: int | None = None) -> list[dict]:
     insights = []
 
-    total_prods = _scalar("SELECT COUNT(*) FROM product_master")
+    total_prods = _scalar("SELECT COUNT(*) FROM product_master", month=month)
     active_prods = _scalar(
         "SELECT COUNT(DISTINCT sol.product_id) FROM sales_order so "
         "JOIN sales_order_line sol ON so.so_id=sol.so_id WHERE so.status='closed'"
@@ -368,7 +384,7 @@ def _product_insights() -> list[dict]:
             itype,
         ))
 
-    total_cats = _scalar("SELECT COUNT(DISTINCT category) FROM product_master")
+    total_cats = _scalar("SELECT COUNT(DISTINCT category) FROM product_master", month=month)
     insights.append(_insight(
         "Category Breadth",
         f"The catalogue spans {_fmt_num(total_cats)} product categories. "
@@ -469,12 +485,12 @@ def _product_insights() -> list[dict]:
 # VENDOR / PROCUREMENT insights
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _vendor_insights() -> list[dict]:
+def _vendor_insights(month: int | None = None) -> list[dict]:
     insights = []
 
-    total_vendors = _scalar("SELECT COUNT(*) FROM vendor_master")
-    total_pos = _scalar("SELECT COUNT(*) FROM purchase_order")
-    total_po_val = _scalar("SELECT ROUND(SUM(total_amount)::numeric,2) FROM purchase_order")
+    total_vendors = _scalar("SELECT COUNT(*) FROM vendor_master", month=month)
+    total_pos = _scalar("SELECT COUNT(*) FROM purchase_order", month=month)
+    total_po_val = _scalar("SELECT ROUND(SUM(total_amount)::numeric,2) FROM purchase_order", month=month)
     if total_vendors and total_pos and total_po_val:
         avg_pos_per_vendor = int(total_pos) / int(total_vendors) if int(total_vendors) > 0 else 0
         insights.append(_insight(
@@ -492,7 +508,7 @@ def _vendor_insights() -> list[dict]:
     open_val = _scalar(
         "SELECT ROUND(SUM(total_amount)::numeric,2) FROM purchase_order WHERE status='open'"
     )
-    open_count = _scalar("SELECT COUNT(*) FROM purchase_order WHERE status='open'")
+    open_count = _scalar("SELECT COUNT(*) FROM purchase_order WHERE status='open'", month=month)
     if open_val and open_count:
         insights.append(_insight(
             "Open PO Exposure",
@@ -503,7 +519,7 @@ def _vendor_insights() -> list[dict]:
             "neutral",
         ))
 
-    avg_po = _scalar("SELECT ROUND(AVG(total_amount)::numeric,2) FROM purchase_order")
+    avg_po = _scalar("SELECT ROUND(AVG(total_amount)::numeric,2) FROM purchase_order", month=month)
     if avg_po:
         insights.append(_insight(
             "Average PO Value",
@@ -599,15 +615,20 @@ _TOPIC_INSIGHT_FN = {
 }
 
 
-def get_fallback_insights(topic: str, existing_titles: set[str] | None = None) -> list[dict]:
+def get_fallback_insights(
+    topic: str,
+    existing_titles: set[str] | None = None,
+    month: int | None = None,
+) -> list[dict]:
     """Return up to 8 data-backed fallback insights for the given topic.
 
     Each insight is a dict with 'title', 'body', and 'type' keys.
     Pass existing_titles to avoid duplicate insight headings.
+    If month is given (1-12), all SQL queries are filtered to that month only.
     """
     fn = _TOPIC_INSIGHT_FN.get(topic, _sales_insights)
     try:
-        candidates = fn()
+        candidates = fn(month=month)
     except Exception as exc:
         logger.error("Fallback insight generation failed for topic '%s': %s", topic, exc)
         return []

@@ -299,6 +299,13 @@ class ReportGeneration(dspy.Signature):
       For all-order overviews, open orders, backorders: use no filter or explicit status
     • purchase_order has NO po_date — use created_at for date grouping
     • product_master has NO subcategory column — use only category
+    • ⚠ MONTH FILTER RULE — CRITICAL: When [ACTIVE FILTERS] contains a "Month filter"
+      (e.g. "Month filter: February only (month number 2)"), you MUST add
+      EXTRACT(MONTH FROM so.order_date) = <month_number>  to EVERY sales_order SQL WHERE clause.
+      For purchase_order use EXTRACT(MONTH FROM po.created_at) = <month_number>.
+      This selects only that month across ALL years so the trend chart shows year-over-year comparison.
+      For time-series charts in a month-filtered report, group by YEAR (TO_CHAR(date, 'YYYY') AS year)
+      instead of YYYY-MM, so each bar/point represents one year's value for that month.
 
 
     ══════════════════════════════════════════════════════════════

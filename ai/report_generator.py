@@ -582,6 +582,16 @@ def _inject_filters(sql: str, filters: dict) -> str:
 
         conditions.append(f"{cm_alias}.customer_name = '{cust_val}'")
 
+    # ── Month filter (e.g. February = 2 across all years) ────────────────
+    if filters.get('month'):
+        month_num = int(filters['month'])
+        if is_sales:
+            so_alias = _alias('sales_order') or 'so'
+            conditions.append(f"EXTRACT(MONTH FROM {so_alias}.order_date) = {month_num}")
+        elif is_po:
+            po_alias = _alias('purchase_order') or 'po'
+            conditions.append(f"EXTRACT(MONTH FROM {po_alias}.created_at) = {month_num}")
+
     # ── Merge conditions into SQL ─────────────────────────────────────────
     if conditions:
         cond_str = ' AND '.join(conditions)
@@ -720,8 +730,10 @@ class ReportPipeline:
             f"[CONTEXT: Today is {today.isoformat()}. "
             f"Current year = {current_year}. "
             f"'Last year' = {last_year} ({last_year}-01-01 to {last_year}-12-31). "
-            f"'This year' = {current_year} ({current_year}-01-01 to {current_year}-12-31).]\n\n"
-            f"{question}"
+            f"'This year' = {current_year} ({current_year}-01-01 to {current_year}-12-31). "
+            f"If [ACTIVE FILTERS] mentions a Month filter, add "
+            f"EXTRACT(MONTH FROM order_date) = <month_num> to every SQL query.]"
+            f"\n\n{question}"
         )
 
     @staticmethod
@@ -1228,6 +1240,45 @@ class ReportPipeline:
                 "report": None,
             }
 
+        # ── Step 1b: Force-inject month filter into all blueprint SQLs ──────
+        # The LLM routinely ignores [ACTIVE FILTERS] in its SQL templates.
+        # We detect the month from the question string and inject it
+        # programmatically into every kpi/chart/table SQL before execution.
+        import re as _re
+        _MONTH_MAP = {
+            "january":1,"jan":1,"february":2,"feb":2,"march":3,"mar":3,
+            "april":4,"apr":4,"may":5,"june":6,"jun":6,"july":7,"jul":7,
+            "august":8,"aug":8,"september":9,"sep":9,"sept":9,
+            "october":10,"oct":10,"november":11,"nov":11,"december":12,"dec":12,
+        }
+        _q_lower = question.lower()
+        _detected_month: int | None = None
+        for _mn, _num in _MONTH_MAP.items():
+            if _re.search(rf"\b{_re.escape(_mn)}\b", _q_lower):
+                _detected_month = _num
+                break
+
+        if _detected_month:
+            import calendar as _cal
+            _mname = _cal.month_name[_detected_month]
+            logger.info(
+                "Blueprint SQL injection — forcing month=%d (%s) into all SQLs",
+                _detected_month, _mname,
+            )
+            _mf = {"month": _detected_month}
+            for _kpi in blueprint.get("kpis", []):
+                if _kpi.get("sql"):
+                    _kpi["sql"] = _inject_filters(_fix_report_sql(_kpi["sql"]), _mf)
+            for _ch in blueprint.get("charts", []):
+                if _ch.get("sql"):
+                    _ch["sql"] = _inject_filters(_fix_report_sql(_ch["sql"]), _mf)
+            if blueprint.get("table", {}).get("sql"):
+                blueprint["table"]["sql"] = _inject_filters(
+                    _fix_report_sql(blueprint["table"]["sql"]), _mf
+                )
+            # Store on blueprint so agents/summary can read it
+            blueprint["_detected_month"] = _detected_month
+
         # ── Step 2: Parallel agent execution ──────────────────────────────
         # asyncio.get_running_loop() raises RuntimeError when called outside
         # an async context (Python 3.7+, no deprecation warnings unlike
@@ -1271,6 +1322,7 @@ class ReportPipeline:
                 question=question,
                 topic=report.get("topic") or _detect_topic(question),
                 kpis=report.get("kpis", []),
+                month=report.get("_detected_month") or blueprint.get("_detected_month"),
             )
         except Exception as _sum_err:
             logger.warning("Summary rebuild failed, keeping LLM summary: %s", _sum_err)
@@ -1315,7 +1367,7 @@ class ReportPipeline:
             self._execute_chart_sql(chart)
 
     def _build_db_verified_summary(
-        self, question: str, topic: str, kpis: list[dict]
+        self, question: str, topic: str, kpis: list[dict], month: int | None = None
     ) -> str:
         """Build an executive summary using real database values.
 
@@ -1323,7 +1375,13 @@ class ReportPipeline:
         then formats them into a concise, accurate summary sentence.
         Replaces the LLM's hallucinated summary.
         """
+        import calendar
         from db.executor import execute_sql
+
+        # Month clause injected into every WHERE (empty string = no filter)
+        _mclause_so = f" AND EXTRACT(MONTH FROM order_date) = {month}" if month else ""
+        _mclause_so_alias = f" AND EXTRACT(MONTH FROM so.order_date) = {month}" if month else ""
+        _month_label = f" (February)" if month == 2 else (f" ({calendar.month_name[month]})" if month else "")
 
         def _q(sql: str):
             """Run SQL and return the first value of the first row, or None."""
@@ -1374,34 +1432,38 @@ class ReportPipeline:
         # ── SALES / AOV / FULFILMENT / DEFAULT ────────────────────────
         if topic in ("sales", "aov", "fulfilment", "units", "pricing", "default"):
             total_rev = _q(
-                "SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='closed'"
+                f"SELECT ROUND(SUM(total_amount)::numeric,2) FROM sales_order WHERE status='closed'{_mclause_so}"
             )
             total_orders = _q(
-                "SELECT COUNT(*) FROM sales_order WHERE status='closed'"
+                f"SELECT COUNT(*) FROM sales_order WHERE status='closed'{_mclause_so}"
             )
             aov = _q(
-                "SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'"
+                f"SELECT ROUND(AVG(total_amount)::numeric,2) FROM sales_order WHERE status='closed'{_mclause_so}"
             )
             top_custs = _top3_names(
-                "SELECT cm.customer_name FROM sales_order so "
-                "JOIN customer_master cm ON so.customer_id=cm.customer_id "
-                "WHERE so.status='closed' GROUP BY cm.customer_name "
+                f"SELECT cm.customer_name FROM sales_order so "
+                f"JOIN customer_master cm ON so.customer_id=cm.customer_id "
+                f"WHERE so.status='closed'{_mclause_so_alias} GROUP BY cm.customer_name "
                 "ORDER BY SUM(so.total_amount) DESC LIMIT 3"
             )
             top_cat = _q(
-                "SELECT pm.category FROM sales_order so "
-                "JOIN sales_order_line sol ON so.so_id=sol.so_id "
-                "JOIN sales_order_line_pricing solp ON sol.sol_id=solp.sol_id "
-                "JOIN product_master pm ON sol.product_id=pm.product_id "
-                "WHERE so.status='closed' GROUP BY pm.category "
-                "ORDER BY SUM(solp.line_total) DESC LIMIT 1"
+                f"SELECT pm.category FROM sales_order so "
+                f"JOIN sales_order_line sol ON so.so_id=sol.so_id "
+                f"JOIN sales_order_line_pricing solp ON sol.sol_id=solp.sol_id "
+                f"JOIN product_master pm ON sol.product_id=pm.product_id "
+                f"WHERE so.status='closed'{_mclause_so_alias} GROUP BY pm.category "
+                f"ORDER BY SUM(solp.line_total) DESC LIMIT 1"
             )
             fulfil = _q(
-                "SELECT ROUND(100.0*COUNT(*) FILTER(WHERE status='closed')"
-                "/NULLIF(COUNT(*),0),1) FROM sales_order"
+                f"SELECT ROUND(100.0*COUNT(*) FILTER(WHERE status='closed')"
+                f"/NULLIF(COUNT(*),0),1) FROM sales_order"
+                + (f" WHERE EXTRACT(MONTH FROM order_date) = {month}" if month else "")
             )
 
             parts = []
+            if month:
+                import calendar as _cal2
+                parts.append(f"Showing data for {_cal2.month_name[month]} across all years.")
             if total_rev and total_orders:
                 parts.append(
                     f"Total revenue from {_fmt_num(total_orders)} closed orders "

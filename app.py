@@ -92,6 +92,34 @@ class ChatResponse(BaseModel):
     insights: str
 
 
+# Month-name → number mapping for natural-language month detection
+_MONTH_NAMES: dict[str, int] = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def _extract_month_from_question(question: str) -> int | None:
+    """Return the month number (1–12) if the question mentions a specific month, else None."""
+    import re
+    q = question.lower()
+    # Match whole words only to avoid false positives (e.g. "march" vs "marching")
+    for name, num in _MONTH_NAMES.items():
+        if re.search(rf"\b{re.escape(name)}\b", q):
+            return num
+    return None
+
+
 class ReportRequest(BaseModel):
     question: str
     provider: str = "groq"
@@ -136,6 +164,20 @@ class ReportChartFilterRequest(BaseModel):
 class ReportModifyRequest(BaseModel):
     report_json: str
     modification: str
+    provider: str = "groq"
+
+
+class ChartModifyRequest(BaseModel):
+    chart: dict
+    instruction: str
+    history: list[str] = []
+    provider: str = "groq"
+
+
+class ReportChatEditRequest(BaseModel):
+    report: dict
+    command: str
+    history: list[str] = []
     provider: str = "groq"
 
 
@@ -332,6 +374,9 @@ def report_endpoint(req: ReportRequest):
     """Generate a full analytics report from a natural-language question."""
     from ai.report_generator import ReportPipeline
 
+    # ── Auto-detect month from question (e.g. "february", "feb") ─────────
+    detected_month = _extract_month_from_question(req.question)
+
     # Build filter context string for the LLM
     filters = []
     if req.date_from:
@@ -348,6 +393,15 @@ def report_endpoint(req: ReportRequest):
         filters.append(f"Order status filter: {req.status}")
     if req.product:
         filters.append(f"Product filter: {req.product}")
+    if detected_month:
+        import calendar
+        month_name = calendar.month_name[detected_month]  # e.g. "February"
+        filters.append(
+            f"Month filter: {month_name} only (month number {detected_month}). "
+            f"Add EXTRACT(MONTH FROM order_date) = {detected_month} "
+            f"(or EXTRACT(MONTH FROM created_at) = {detected_month} for purchase_order) "
+            f"to EVERY SQL WHERE clause. This compares {month_name} across ALL years."
+        )
 
     filter_ctx = ""
     if filters:
@@ -355,9 +409,18 @@ def report_endpoint(req: ReportRequest):
 
     question_with_filters = req.question + filter_ctx
 
-    logger.info("REPORT request | question=%s | filters=%s", req.question, filter_ctx or "none")
+    logger.info(
+        "REPORT request | question=%s | filters=%s | detected_month=%s",
+        req.question, filter_ctx or "none", detected_month,
+    )
     pipeline = ReportPipeline(provider=req.provider)
-    return pipeline.generate(question_with_filters)
+    result = pipeline.generate(question_with_filters)
+
+    # ── Attach detected month so frontend / apply-filters can propagate it ─
+    if detected_month and isinstance(result, dict):
+        result["detected_month"] = detected_month
+
+    return result
 
 
 @app.post("/report/apply-filters")
@@ -480,6 +543,49 @@ def report_modify_endpoint(req: ReportModifyRequest):
     pipeline = ReportPipeline(provider=req.provider)
     return pipeline.modify(req.report_json, req.modification)
 
+
+@app.post("/report/modify-chart")
+def report_modify_chart_endpoint(req: ChartModifyRequest):
+    """Modify a single chart via a natural language instruction.
+
+    Supports: axis changes, chart type conversion, top-N, filters,
+    grouping, sorting, and smart prompt rewriting for vague inputs.
+
+    Returns:
+        mode='modified'  → { chart, explanation, sql }
+        mode='clarify'   → { message, options[] }  (vague / low-confidence)
+        mode='no_change' → { message, chart }
+        mode='error'     → { error }
+    """
+    from ai.chart_modification_pipeline import ChartModificationPipeline
+
+    logger.info(
+        "CHART MODIFY | chart=%s | instruction=%s",
+        req.chart.get("title", "?")[:40],
+        req.instruction[:80],
+    )
+    pipeline = ChartModificationPipeline(provider=req.provider)
+    return pipeline.modify(req.chart, req.instruction, req.history)
+
+
+@app.post("/report/chat-edit")
+def report_chat_edit_endpoint(req: ReportChatEditRequest):
+    """Full report editing via natural language chat.
+
+    Supports: add chart, modify chart (@mention), remove chart,
+              add KPI, remove KPI.
+
+    Returns:
+        mode='updated'   → { report, message }     ← full updated report JSON
+        mode='clarify'   → { message, options[] }
+        mode='no_change' → { message }
+        mode='error'     → { error }
+    """
+    from ai.report_edit_agent import ReportEditAgent
+
+    logger.info("REPORT CHAT EDIT | command=%s", req.command[:80])
+    agent = ReportEditAgent(provider=req.provider)
+    return agent.chat_edit(req.report, req.command, req.history)
 
 
 # ── Data modification endpoints (two-phase: preview then execute) ────────────
